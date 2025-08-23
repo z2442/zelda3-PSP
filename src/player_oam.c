@@ -941,7 +941,8 @@ continue_after_set:
         uint8 zt = ((int16)link_z_coord >= 0 || BYTE(link_z_coord) < 0xf0) ? BYTE(link_z_coord) : 0;
         oam_buf[oam_pos].y = kPlayerOam_Spr1Y[j] + ycoord - zt;
         oam_buf[oam_pos].x = kPlayerOam_Spr1X[j] + xcoord;
-        uint16 q = WORD(kPlayerOam_Prio[bank1 >> 1]);
+        const uint8 *p = &kPlayerOam_Prio[bank1 >> 1];
+        uint16 q = (uint16)p[0] | ((uint16)p[1] << 8);
         q = (bank1 & 1) ? q << 4 : q;
         WORD(oam_buf[oam_pos].charnum) = (q & 0xc000) | oam_priority_value | link_palette_bits_of_oam | 4;
         bytewise_extended_oam[oam_pos] = 0;
@@ -955,7 +956,8 @@ continue_after_set:
       uint8 zt = ((int16)link_z_coord >= 0 || BYTE(link_z_coord) < 0xf0) ? BYTE(link_z_coord) : 0;
       oam_buf[oam_pos].y = kPlayerOam_Spr2Y[j] + ycoord - zt;
       oam_buf[oam_pos].x = kPlayerOam_Spr2X[j] + xcoord;
-      uint16 q = WORD(kPlayerOam_Prio[bank2 >> 1]);
+      const uint8 *p = &kPlayerOam_Prio[bank2 >> 1];
+      uint16 q = (uint16)p[0] | ((uint16)p[1] << 8);
       q = (bank2 & 1) ? q << 4 : q;
       WORD(oam_buf[oam_pos].charnum) = (q & 0xc000) | oam_priority_value | link_palette_bits_of_oam | 0x14;
       bytewise_extended_oam[oam_pos] = 0;

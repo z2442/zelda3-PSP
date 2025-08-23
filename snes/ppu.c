@@ -7,6 +7,7 @@
 #include <assert.h>
 #include "ppu.h"
 #include "src/types.h"
+#include "snes.h"
 
 static const uint8 kSpriteSizes[8][2] = {
   {8, 16}, {8, 32}, {8, 64}, {16, 32},
@@ -33,7 +34,7 @@ enum {
   kWindow2Enabled = 8,
 };
 
-Ppu* ppu_init() {
+Ppu* ppu_init(Ppu* snes) {
   Ppu* ppu = (Ppu * )malloc(sizeof(Ppu));
   ppu->extraLeftRight = kPpuExtraLeftRight;
   return ppu;

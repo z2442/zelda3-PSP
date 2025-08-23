@@ -30,7 +30,7 @@ Snes* snes_init(uint8_t *ram) {
   snes->cpu = cpu_init(snes, 0);
   snes->apu = apu_init();
   snes->dma = dma_init(snes);
-  snes->ppu = ppu_init(snes);
+  snes->ppu = ppu_init((Ppu *)snes);
   snes->cart = cart_init(snes);
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
@@ -360,6 +360,7 @@ static uint8_t snes_rread(Snes* snes, uint32_t adr) {
 int g_bp_addr = 0;
 
 
+inline __attribute__((always_inline, hot))
 void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   snes->openBus = val;
   uint8_t bank = adr >> 16;
@@ -394,8 +395,8 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   // write to cart
 }
 
-static int snes_getAccessTime(Snes* snes, uint32_t adr) {
-  // optimization
+static inline __attribute__((always_inline))
+int snes_getAccessTime(Snes* snes, uint32_t adr) {
   return 6;
 }
 

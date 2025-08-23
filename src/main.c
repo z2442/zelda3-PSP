@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #ifdef _WIN32
 #include "platform/win32/volume_control.h"
 #include <direct.h>
@@ -27,7 +27,47 @@
 #include "util.h"
 #include "audio.h"
 
-static bool g_run_without_emu = 0;
+#include <pspkernel.h>
+#include <psppower.h>
+#include <pspsuspend.h>
+
+// --- PSP Module Info ---
+PSP_MODULE_INFO("Zelda_3_PSP", 0, 1, 0); // Changed name slightly, version 1.0
+PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drivers. Adjust as needed.
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
+PSP_MAIN_THREAD_STACK_SIZE_KB(512); // Increase stack size if needed (default is 64KB)
+
+//barrowed from the PSPSDK - 
+//Failed to link for some reason 
+//TODO: CLEAN UP later when we find a fix in cmakelists.txt.
+void pspFpuSetEnableStandalone(uint32_t enable)
+{
+    uint32_t fcr;
+
+    enable &= 0x1F;
+
+    // Read FCR31 register directly
+    __asm__ volatile (
+        "cfc1 %0, $31\n"
+        : "=r"(fcr)
+    );
+
+    // Mask and update enable bits
+    fcr &= ~(0x1F << 7); // Clear bits 7-11 (PSP_FPU_ENABLE_MASK)
+    fcr |= (enable << 7);
+
+    // Write back to FCR31
+    __asm__ volatile (
+        "ctc1 %0, $31\n"
+        :
+        : "r"(fcr)
+    );
+}
+
+
+
+
+static bool g_run_without_emu = 1;
 
 // Forwards
 static bool LoadRom(const char *filename);
@@ -52,7 +92,7 @@ enum {
 };
 
 static const char kWindowTitle[] = "The Legend of Zelda: A Link to the Past";
-static uint32 g_win_flags = SDL_WINDOW_RESIZABLE;
+static uint32 g_win_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
 static SDL_Window *g_window;
 
 static uint8 g_paused, g_turbo, g_replay_turbo = true, g_cursor = true;
@@ -212,7 +252,7 @@ static bool SdlRenderer_Init(SDL_Window *window) {
 
   SDL_Renderer *renderer = SDL_CreateRenderer(g_window, -1,
                                               g_config.output_method == kOutputMethod_SDLSoftware ? SDL_RENDERER_SOFTWARE :
-                                              SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+                                              SDL_RENDERER_ACCELERATED );
   if (renderer == NULL) {
     printf("Failed to create renderer: %s\n", SDL_GetError());
     return false;
@@ -276,8 +316,14 @@ static const struct RendererFuncs kSdlRendererFuncs  = {
 
 void OpenGLRenderer_Create(struct RendererFuncs *funcs, bool use_opengl_es);
 
+
 #undef main
 int main(int argc, char** argv) {
+  
+  scePowerSetClockFrequency(333, 333, 166);
+
+  pspFpuSetEnableStandalone(0);
+  
   argc--, argv++;
   const char *config_file = NULL;
   if (argc >= 2 && strcmp(argv[0], "--config") == 0) {
@@ -354,6 +400,9 @@ int main(int argc, char** argv) {
 
   if (!g_renderer_funcs.Initialize(window))
     return 1;
+
+    SDL_GL_SetSwapInterval(0); // prevent GL swap from doing its own blocking; we pace on vblank
+
 
   SDL_AudioDeviceID device = 0;
   SDL_AudioSpec want = { 0 }, have;
@@ -471,29 +520,11 @@ int main(int argc, char** argv) {
 
     if (g_config.display_perf_title) {
       char title[60];
-      snprintf(title, sizeof(title), "%s | FPS: %d", kWindowTitle, g_curr_fps);
+      printf(title, sizeof(title), "%s | FPS: %d", kWindowTitle, g_curr_fps);
       SDL_SetWindowTitle(g_window, title);
     }
 
-    // if vsync isn't working, delay manually
-    curTick = SDL_GetTicks();
-
-    if (!g_config.disable_frame_delay) {
-      static const uint8 delays[3] = { 17, 17, 16 }; // 60 fps
-      lastTick += delays[frameCtr % 3];
-
-      if (lastTick > curTick) {
-        uint32 delta = lastTick - curTick;
-        if (delta > 500) {
-          lastTick = curTick - 500;
-          delta = 500;
-        }
-//        printf("Sleeping %d\n", delta);
-        SDL_Delay(delta);
-      } else if (curTick - lastTick > 500) {
-        lastTick = curTick;
-      }
-    }
+ 
   }
   if (g_config.autosave)
     HandleCommand(kKeys_Save + 0, true);
@@ -650,9 +681,11 @@ static void HandleCommand_Locked(uint32 j, bool pressed) {
 }
 
 static void HandleInput(int keyCode, int keyMod, bool pressed) {
+/*
   int j = FindCmdForSdlKey(keyCode, keyMod);
   if (j != 0)
     HandleCommand(j, pressed);
+*/
 }
 
 static void OpenOneGamepad(int i) {

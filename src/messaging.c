@@ -2311,11 +2311,12 @@ void Text_LoadCharacterBuffer() {  // 8ec4e2
 
 uint8 *Text_WritePlayerName(uint8 *p) {  // 8ec5b3
   uint8 slot = srm_var1;
-  int offs = ((slot>>1) - 1) * 0x500;
+  int offs = ((slot >> 1) - 1) * 0x500;
   for (int i = 0; i < 6; i++) {
     uint8 *pp = &g_zenv.sram[0x3d9 + offs + i * 2];
-    uint16 a = WORD(*pp);
-    p[i] = Text_FilterPlayerNameCharacters(a & 0xf | (a >> 1) & 0xf0);
+    // Alignment-safe little-endian read of the 16-bit glyph value
+    uint16 a = (uint16)pp[0] | ((uint16)pp[1] << 8);
+    p[i] = Text_FilterPlayerNameCharacters((a & 0x0F) | ((a >> 1) & 0xF0));
   }
   int i = 6;
   while (i && p[i - 1] == 0x59)
@@ -2794,7 +2795,8 @@ void Text_GenerateMessagePointers() {  // 8ed3eb
   for (int i = 0; i < 398; i++) {
     if (i == 359)
       p = 0xedf40;
-    WORD(dst[0]) = p;
+    dst[0] = (uint8)(p & 0xFF);
+    dst[1] = (uint8)((p >> 8) & 0xFF);
     dst[2] = p >> 16;
     dst += 3;
     p += (uint32)FindIndexInMemblk(dialogue, i).size + 1;

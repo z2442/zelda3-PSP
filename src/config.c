@@ -2,7 +2,7 @@
 #include "types.h"
 #include <stdio.h>
 #include <string.h>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #include "features.h"
 #include "util.h"
 

@@ -330,12 +330,28 @@ static void Startup_InitializeMemory() {  // 8087c0
   main_palette_buffer[0] = 0;
   srm_var1 = 0;
   uint8 *sram = g_zenv.sram;
-  if (WORD(sram[0x3e5]) != 0x55aa)
-    WORD(sram[0x3e5]) = 0;
-  if (WORD(sram[0x8e5]) != 0x55aa)
-    WORD(sram[0x8e5]) = 0;
-  if (WORD(sram[0xde5]) != 0x55aa)
-    WORD(sram[0xde5]) = 0;
+  // PSP-safe unaligned checks: compare 16-bit little-endian values and clear if not 0x55AA
+  {
+    uint16 v = (uint16)sram[0x3e5] | ((uint16)sram[0x3e6] << 8);
+    if (v != 0x55aa) {
+      sram[0x3e5] = 0;
+      sram[0x3e6] = 0;
+    }
+  }
+  {
+    uint16 v = (uint16)sram[0x8e5] | ((uint16)sram[0x8e6] << 8);
+    if (v != 0x55aa) {
+      sram[0x8e5] = 0;
+      sram[0x8e6] = 0;
+    }
+  }
+  {
+    uint16 v = (uint16)sram[0xde5] | ((uint16)sram[0xde6] << 8);
+    if (v != 0x55aa) {
+      sram[0xde5] = 0;
+      sram[0xde6] = 0;
+    }
+  }
   INIDISP_copy = 0x80;
   flag_update_cgram_in_nmi++;
 }

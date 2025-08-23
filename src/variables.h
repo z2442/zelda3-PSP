@@ -1270,7 +1270,7 @@
 #define attract_var11 (*(uint8*)(g_ram+0x61))
 #define attract_var19 (*(uint8*)(g_ram+0x62))
 #define attract_var20 (*(uint8*)(g_ram+0x63))
-#define selectfile_arr1 ((uint16*)(g_ram+0xBF))
+#define selectfile_arr1 ((uint8 *)&g_ram[0xBF])
 #define selectfile_arr2 ((uint8*)(g_ram+0xCA))
 #define selectfile_var6 (*(uint8*)(g_ram+0xCC))
 #define attract_room_index (*(uint8*)(g_ram+0x10E))

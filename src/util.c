@@ -176,7 +176,8 @@ MemBlk FindIndexInMemblk(MemBlk data, size_t i) {
   if (data.size < 2)
     return (MemBlk) { 0, 0 };
   size_t end = data.size - 2, left_off, right_off;
-  size_t mx = *(uint16 *)(data.ptr + end);
+  size_t mx = (size_t)( (uint16)data.ptr[end] |
+                     ((uint16)data.ptr[end + 1] << 8) );
   if (mx < 8192) {
     if (i > mx || mx * 2 > end)
       return (MemBlk) { 0, 0 };

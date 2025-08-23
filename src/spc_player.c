@@ -1251,10 +1251,10 @@ void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data) {
   Dsp_Write(p, KOF, 0xff);
 
   for (;;) {
-    int numbytes = *(uint16 *)(data);
+    int numbytes = (int)((uint16)data[0] | ((uint16)data[1] << 8));
     if (numbytes == 0)
       break;
-    int target = *(uint16 *)(data + 2);
+    int target = (int)((uint16)data[2] | ((uint16)data[3] << 8));
     data += 4;
     do {
       p->ram[target++ & 0xffff] = *data++;
@@ -1274,7 +1274,7 @@ void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data) {
 
 #if WITH_SPC_PLAYER_DEBUGGING
 
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 static DspRegWriteHistory my_write_hist;
 static SpcPlayer my_spc, my_spc_snapshot;

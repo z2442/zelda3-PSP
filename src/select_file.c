@@ -7,7 +7,7 @@
 #include "messaging.h"
 #include "sprite.h"
 
-#define selectfile_R16 g_ram[0xc8]
+#define selectfile_R16   (*(uint8 *)&g_ram[0xc8])
 #define selectfile_R17 g_ram[0xc9]
 #define selectfile_R18 WORD(g_ram[0xca])
 #define selectfile_R20 WORD(g_ram[0xcc])
@@ -69,7 +69,8 @@ void SelectFile_Func6_DrawOams2(int k) {
   uint8 x = 0x34;
   uint8 y = kSelectFile_Draw_Y[k];
 
-  int died_ctr = WORD(sram[kSrmOffs_DiedCounter]);
+  int died_ctr = (int)((uint16)sram[kSrmOffs_DiedCounter + 0] |
+                       ((uint16)sram[kSrmOffs_DiedCounter + 1] << 8));
   if (died_ctr == 0xffff)
     return;
 
@@ -92,15 +93,22 @@ void SelectFile_Func6_DrawOams2(int k) {
 void SelectFile_Func17(int k) {
   static const uint16 kSelectFile_DrawName_VramOffs[3] = {8, 0x5c, 0xb0};
   static const uint16 kSelectFile_DrawName_HealthVramOffs[3] = {0x16, 0x6a, 0xbe};
+
+  // Base of this slot’s SRAM
   uint8 *sram = g_zenv.sram + 0x500 * k;
-  uint16 *name = (uint16 *)(sram + kSrmOffs_Name);
+
+  // ---- Draw 6-character name (unaligned-safe: read as bytes, little-endian) ----
   uint16 *dst = vram_upload_data + kSelectFile_DrawName_VramOffs[k] / 2;
-  for (int i = 5; i >= 0; i--) {
-    uint16 t = *name++ + 0x1800;
-    dst[0] = t;
+  for (int i = 0; i < 6; i++) {
+    uint16 t = (uint16)sram[kSrmOffs_Name + i * 2 + 0] |
+               ((uint16)sram[kSrmOffs_Name + i * 2 + 1] << 8);
+    t += 0x1800;
+    dst[0]  = t;
     dst[21] = t + 0x10;
     dst++;
   }
+
+  // ---- Draw health pips ----
   int health = sram[kSrmOffs_Health] >> 3;
   dst = vram_upload_data + kSelectFile_DrawName_HealthVramOffs[k] / 2;
   uint16 *dst_org = dst;
@@ -306,58 +314,92 @@ void FileSelect_TriggerNameStripesAndAdvance() {  // 8cceb1
   nmi_load_bg_from_vram = 6;
 }
 
+// Helper to check if an SRAM slot contains a valid save marker (0x55AA at 0x3E5)
+static inline bool SlotHasSave(uint8 k) {
+  if (k >= 3)
+    return false;
+const uint8 *cart = g_zenv.sram;
+if (!cart)
+  return false; // defensive: no SRAM yet
+  const uint8 *p = cart + (size_t)k * 0x500 + 0x3E5; // marker is little-endian at 0x3E5
+  uint16 marker = (uint16)p[0] | ((uint16)p[1] << 8);
+  return marker == 0x55AA;
+}
+
 void FileSelect_Main() {  // 8ccebd
   static const uint8 kSelectFile_Faerie_Y[5] = {0x4a, 0x6a, 0x8a, 0xaf, 0xbf};
 
   const uint8 *cart = g_zenv.sram;
 
+  // Track the last selected real slot (0..2) for other modules.
   if (selectfile_R16 < 3)
     selectfile_var2 = selectfile_R16;
 
-  for (int k = 0; k < 3; k++) {
-    if (*(uint16 *)(cart + k * 0x500 + 0x3E5) == 0x55AA) {
+  // Re-scan the three save slots each frame using a bytewise LE read of the 0x3E5 marker.
+  // Also clear selectfile_arr1[k] when the marker is absent to avoid stale state.
+// Re-scan the three save slots using SlotHasSave (handles NULL SRAM + LE read)
+for (int k = 0; k < 3; k++) {
+  if (SlotHasSave((uint8)k)) {
+    if (!selectfile_arr1[k])
       selectfile_arr1[k] = 1;
-      SelectFile_Func5_DrawOams(k);
-      SelectFile_Func6_DrawOams2(k);
-      SelectFile_Func17(k);
-    }
+    SelectFile_Func5_DrawOams(k);
+    SelectFile_Func6_DrawOams2(k);
+    SelectFile_Func17(k);
+  } else {
+    selectfile_arr1[k] = 0;
   }
+}
 
+  // Draw the fairy cursor for the current selection (indices 0..4 are valid).
   FileSelect_DrawFairy(0x1c, kSelectFile_Faerie_Y[selectfile_R16]);
   nmi_load_bg_from_vram = 1;
 
+  // Handle navigation and activation.
   uint8 a = (filtered_joypad_L & 0xc0 | filtered_joypad_H) & 0xfc;
   if (a & 0x2c) {
+    // Left/right on the five-position menu (3 slots + Copy + Erase)
+    sound_effect_2 = 0x20;
     if (a & 8) {
-      sound_effect_2 = 0x20;
       if (sign8(--selectfile_R16))
-        selectfile_R16 = 4;
+        selectfile_R16 = 4;  // wrap from 0 to 4
     } else {
-      sound_effect_2 = 0x20;
       if (++selectfile_R16 == 5)
-        selectfile_R16 = 0;
+        selectfile_R16 = 0;  // wrap from 4 to 0
     }
   } else if (a != 0) {
+    // Confirm / proceed depending on selection
     sound_effect_1 = 0x2c;
     if (selectfile_R16 < 3) {
+      // One of the three save slots
       selectfile_R17 = 0;
-      if (!selectfile_arr1[selectfile_R16]) {
+      if (!SlotHasSave(selectfile_R16)) {
+        // Start new file -> go to naming module
         main_module_index = 4;
         submodule_index = 0;
         subsubmodule_index = 0;
       } else {
+        // Load existing save
         music_control = 0xf1;
         srm_var1 = selectfile_R16 * 2 + 2;
-        WORD(g_ram[0]) = selectfile_R16 * 0x500;
+        // PSP/MIPS safe: write 16-bit offset into g_ram[0..1] as bytes
+        {
+          uint16 off = (uint16)(selectfile_R16 * 0x500);
+          g_ram[0] = (uint8)(off & 0xFF);
+          g_ram[1] = (uint8)(off >> 8);
+        }
         CopySaveToWRAM();
       }
-    } else if (selectfile_arr1[0] | selectfile_arr1[1] | selectfile_arr1[2]) {
-      main_module_index = (selectfile_R16 == 3) ? 2 : 3;
-      selectfile_R16 = 0;
-      submodule_index = 0;
-      subsubmodule_index = 0;
     } else {
-      sound_effect_1 = 0x3c;
+      // Copy (index 3) or Erase (index 4)
+      if (SlotHasSave(0) | SlotHasSave(1) | SlotHasSave(2)) {
+        main_module_index = (selectfile_R16 == 3) ? 2 : 3; // 2 = Copy, 3 = Erase
+        selectfile_R16 = 0;
+        submodule_index = 0;
+        subsubmodule_index = 0;
+      } else {
+        // No saves to act on
+        sound_effect_1 = 0x3c;
+      }
     }
   }
 }
@@ -748,8 +790,13 @@ void NameFile_EraseSave() {  // 8cd89c
   int offs = selectfile_R16 * 0x500;
   attract_legend_ctr = offs;
   memset(g_zenv.sram + offs, 0, 0x500);
-  uint16 *name = (uint16 *)(g_zenv.sram + offs + kSrmOffs_Name);
-  name[0] = name[1] = name[2] = name[3] = name[4] = name[5] = 0xa9;
+{
+  uint8 *base = g_zenv.sram + offs + kSrmOffs_Name;
+  for (int i = 0; i < 6; i++) {
+    base[i * 2 + 0] = 0xA9; // low byte
+    base[i * 2 + 1] = 0x00; // high byte
+  }
+}
 }
 
 void NameFile_DoTheNaming() {  // 8cda4d
@@ -773,6 +820,8 @@ void NameFile_DoTheNaming() {  // 8cda4d
     0x44, 0x59, 0x6f, 0x6f, 0x59, 0x59, 0x59, 0x59, 0x59, 0x59, 0x59, 0x5a, 0x44, 0x59, 0x6f, 0x6f,
     0x59, 0x59, 0x5a, 0x44, 0x59, 0x6f, 0x6f, 0x59, 0x59, 0x59, 0x59, 0x59, 0x59, 0x59, 0x59, 0x5a,
   };
+
+  // Horizontal scrolling / selection animation
   for (;;) {
     int j = selectfile_var9;
     if (j == 0) {
@@ -789,10 +838,16 @@ void NameFile_DoTheNaming() {  // 8cda4d
     }
     if (!selectfile_var10)
       j += 2;
-    selectfile_var8 = (selectfile_var8 + WORD(((uint8*)&kNamePlayer_Tab1)[j])) & 0x1ff;
+    // SAFE: read potentially unaligned int16 from Tab1 using byte ops (little-endian)
+    {
+      const uint8 *rp = ((const uint8 *)kNamePlayer_Tab1) + j;
+      int16 delta = (int16)((uint16)rp[0] | ((uint16)rp[1] << 8));
+      selectfile_var8 = (selectfile_var8 + delta) & 0x1ff;
+    }
     break;
   }
 
+  // Vertical scrolling / selection animation
   for (;;) {
     if (selectfile_var11 == 0) {
       NameFile_CheckForScrollInputY();
@@ -807,6 +862,7 @@ void NameFile_DoTheNaming() {  // 8cda4d
     NameFile_CheckForScrollInputY();
   }
 
+  // Draw the alphabet rows and the cursor
   OamEnt *oam = oam_buf;
   for (int i = 0; i != 26; i++) {
     SetOamPlain(oam, 0x18 + i * 8, selectfile_var7, 0x2e, 0x3c, 0);
@@ -817,6 +873,7 @@ void NameFile_DoTheNaming() {  // 8cda4d
   if (selectfile_var9 | selectfile_var11)
     return;
 
+  // Handle input / write a character
   if (!(filtered_joypad_H & 0x10)) {
     if (!(filtered_joypad_H & 0xc0 || filtered_joypad_L & 0xc0))
       return;
@@ -835,30 +892,48 @@ void NameFile_DoTheNaming() {  // 8cda4d
       return;
     } else if (t != 0x6f) {
       int p = selectfile_var4 * 2 + attract_legend_ctr;
-      uint16 chr = (t & 0xfff0) * 2 + (t & 0xf);
-      WORD(g_zenv.sram[p + kSrmOffs_Name]) = chr;
+      uint16 chr = (uint16)((t & 0xfff0) * 2 + (t & 0xf));
+      // SAFE: write LE bytes to SRAM (avoid unaligned halfword store)
+      {
+        uint8 *q = g_zenv.sram + p + kSrmOffs_Name;
+        q[0] = (uint8)(chr & 0xFF);        // low byte
+        q[1] = (uint8)((chr >> 8) & 0xFF); // high byte
+      }
       NameFile_DrawSelectedCharacter(selectfile_var4, chr);
       if (++selectfile_var4 == 6)
         selectfile_var4 = 0;
       return;
     }
   }
-  int i = 0;
-  for(;;) {
-    uint16 a = WORD(g_zenv.sram[i * 2 + attract_legend_ctr + kSrmOffs_Name]);
-    if (a != 0xa9)
-      break;
-    if (++i == 6) {
-      sound_effect_1 = 0x3c;
-      return;
+
+  // Check if all 6 characters are still the placeholder 0x00A9; if so, beep and bail
+  {
+    int i = 0;
+    for (;;) {
+      uint8 *q = g_zenv.sram + i * 2 + attract_legend_ctr + kSrmOffs_Name;
+      uint16 a = (uint16)q[0] | ((uint16)q[1] << 8); // LE read
+      if (a != 0x00A9)
+        break;
+      if (++i == 6) {
+        sound_effect_1 = 0x3c;
+        return;
+      }
     }
   }
+
+  // Finalize: write markers and initial state (alignment-safe stores)
   srm_var1 = selectfile_R16 * 2 + 2;
   uint8 *sram = &g_zenv.sram[selectfile_R16 * 0x500];
-  WORD(sram[0x3e5]) = 0x55aa;
-  WORD(sram[0x20c]) = 0xf000;
-  WORD(sram[0x20e]) = 0xf000;
-  WORD(sram[kSrmOffs_DiedCounter]) = 0xffff;
+  // 0x3E5: save-present marker 0x55AA
+  sram[0x3e5 + 0] = 0xAA;  // low
+  sram[0x3e5 + 1] = 0x55;  // high
+  // 0x20C / 0x20E: initial values 0xF000
+  sram[0x20c + 0] = 0x00;  sram[0x20c + 1] = 0xF0;
+  sram[0x20e + 0] = 0x00;  sram[0x20e + 1] = 0xF0;
+  // Died counter = 0xFFFF
+  sram[kSrmOffs_DiedCounter + 0] = 0xFF;
+  sram[kSrmOffs_DiedCounter + 1] = 0xFF;
+
   static const uint8 kSramInit_Normal[60] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0,    0, 0, 0,    0,    0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0,    0, 0, 0,    0,    0, 0, 0,

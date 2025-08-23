@@ -564,18 +564,28 @@ void DecodeAnimatedSpriteTile_variable(uint8 a) {  // 80d4ed
 }
 
 void Expand3To4High(uint8 *dst, const uint8 *src, const uint8 *base, int num) {  // 80d61c
+  // Convert 3bpp packed into 24 bytes per tile row into 4bpp (SNES-style)
+  // PSP/MIPS: avoid unaligned 16-bit loads; use bytewise LE assembly
   do {
-    const uint8 *src2 = src + 0x10;
+    const uint8 *src2 = src + 0x10;  // plane 3 bytes
     int n = 8;
     do {
-      uint16 t = WORD(src[0]);
-      uint8 u = src2[0];
-      WORD(dst[0]) = t;
-      WORD(dst[0x10]) = (t | (t >> 8) | u) << 8 | u;
-      src += 2, src2 += 1, dst += 2;
+      // Read 16 bits LE from possibly unaligned src
+      uint16 t = (uint16)src[0] | ((uint16)src[1] << 8);
+      uint8  u = src2[0];
+      // Write 16 bits LE to dst (dst is uint8*)
+      dst[0] = (uint8)(t & 0xFF);
+      dst[1] = (uint8)(t >> 8);
+      // WORD(dst[0x10]) = (t | (t >> 8) | u) << 8 | u;
+      {
+        uint16 hi = (uint16)((t | (t >> 8) | u) << 8) | (uint16)u;
+        dst[0x10] = (uint8)(hi & 0xFF);
+        dst[0x11] = (uint8)(hi >> 8);
+      }
+      src += 2; src2 += 1; dst += 2;
     } while (--n);
-    dst += 16, src = src2;
-    if (!(src - base & 0x78))
+    dst += 16; src = src2;
+    if (!(((uintptr_t)(src - base)) & 0x78))  // keep original condition: if (!(src - base & 0x78))
       src += 0x180;
   } while (--num);
 }
@@ -779,15 +789,19 @@ void Do3To4High16Bit(uint8 *dst, const uint8 *src, int num) {  // 80df4f
     const uint8 *src2 = src + 0x10;
     int n = 8;
     do {
-      uint16 t = WORD(src[0]);
-      uint8 u = src2[0];
-      WORD(dst[0]) = t;
-      WORD(dst[0x10]) = (t | (t >> 8) | u) << 8 | u;
-      src += 2, src2 += 1, dst += 2;
+      uint16 t = (uint16)src[0] | ((uint16)src[1] << 8);
+      uint8  u = src2[0];
+      dst[0] = (uint8)(t & 0xFF);
+      dst[1] = (uint8)(t >> 8);
+      {
+        uint16 hi = (uint16)((t | (t >> 8) | u) << 8) | (uint16)u;
+        dst[0x10] = (uint8)(hi & 0xFF);
+        dst[0x11] = (uint8)(hi >> 8);
+      }
+      src += 2; src2 += 1; dst += 2;
     } while (--n);
-    dst += 16, src = src2;
+    dst += 16; src = src2;
   } while (--num);
-
 }
 
 void Do3To4Low16Bit(uint8 *dst, const uint8 *src, int num) {  // 80dfb8
@@ -795,11 +809,16 @@ void Do3To4Low16Bit(uint8 *dst, const uint8 *src, int num) {  // 80dfb8
     const uint8 *src2 = src + 0x10;
     int n = 8;
     do {
-      WORD(dst[0]) = WORD(src[0]);
-      WORD(dst[0x10]) = src2[0];
-      src += 2, src2 += 1, dst += 2;
+      // WORD(dst[0]) = WORD(src[0]);
+      uint16 t = (uint16)src[0] | ((uint16)src[1] << 8);
+      dst[0] = (uint8)(t & 0xFF);
+      dst[1] = (uint8)(t >> 8);
+      // WORD(dst[0x10]) = src2[0]; (store as 16-bit with high byte = 0)
+      dst[0x10] = src2[0];
+      dst[0x11] = 0;
+      src += 2; src2 += 1; dst += 2;
     } while (--n);
-    dst += 16, src = src2;
+    dst += 16; src = src2;
   } while (--num);
 }
 
@@ -847,23 +866,38 @@ void LoadDefaultGraphics() {  // 80e2d0
   const uint8 *src = GetCompSpritePtr(0);
 
   uint16 *vram_ptr = &g_zenv.vram[0x4000];
-  uint16 *tmp = (uint16 *)&g_ram[0xbf];
+
+  // Use an aligned local temp buffer instead of &g_ram[0xbf] (odd address).
+  uint16 tmp[8];
+
   int num = 64;
   do {
+    // First pass: write 16bpp values and record tmp[i] (semantic match).
     for (int i = 7; i >= 0; i--, src += 2) {
-      *vram_ptr++ = WORD(src[0]);
-      tmp[i] = src[0] | src[1];
+      // SAFE: 16-bit little-endian load from possibly unaligned src
+      uint16 v = (uint16)src[0] | ((uint16)src[1] << 8);
+      *vram_ptr++ = v;
+
+      // Original code: tmp[i] = src[0] | src[1];
+      // Keep the same semantics (result fits in 8 bits; stored in uint16 for convenience).
+      tmp[i] = (uint16)(src[0] | src[1]);
     }
+
+    // Second pass: use the recorded tmp[i]
     for (int i = 7; i >= 0; i--, src++) {
-      *vram_ptr++ = src[0] | (src[0] | tmp[i]) << 8;
+      // Original: *vram_ptr++ = src[0] | (src[0] | tmp[i]) << 8;
+      // Preserve exact behavior; tmp[i] holds (src[0]|src[1]) from the matching pair above.
+      uint16 hi = (uint16)((src[0] | (uint8)tmp[i]) << 8);
+      *vram_ptr++ = (uint16)src[0] | hi;
     }
   } while (--num);
 
-  // Load 2bpp graphics used for hud
+  // Load 2bpp graphics used for HUD
   DecompAndUpload2bpp(&g_zenv.vram[0x7000], 0x6a);
   DecompAndUpload2bpp(&g_zenv.vram[0x7400], 0x6b);
   DecompAndUpload2bpp(&g_zenv.vram[0x7800], 0x69);
 }
+
 
 void Attract_LoadBG3GFX() {  // 80e36d
   // load 2bpp gfx for attract images
@@ -937,25 +971,38 @@ void TransferFontToVRAM() {  // 80e556
 
 void Do3To4High(uint16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
   for (int j = 0; j < 64; j++) {
-    uint16 *t = (uint16 *)&dung_line_ptrs_row0;
+    // Use a local 8-bit scratch instead of casting dung_line_ptrs_row0 to uint16*
+    uint8 t[8];
+
+    // First pass: consume 16 bits (2 bytes) per iteration
     for (int i = 7; i >= 0; i--, decomp_addr += 2) {
-      uint16 d = *(uint16 *)decomp_addr;
-      t[i] = (d | (d >> 8)) & 0xff;
+      // SAFE little-endian load from possibly unaligned decomp_addr
+      uint16 d = (uint16)decomp_addr[0] | ((uint16)decomp_addr[1] << 8);
+
+      // Original: t[i] = (d | (d >> 8)) & 0xff; (only low byte used later)
+      t[i] = (uint8)((d | (d >> 8)) & 0xFF);
+
       *vram_ptr++ = d;
     }
+
+    // Second pass: consume 8 bits (1 byte) per iteration
     for (int i = 7; i >= 0; i--, decomp_addr += 1) {
       uint8 d = *decomp_addr;
-      *vram_ptr++ = d | (t[i] | d) << 8;
+      // Original: *vram_ptr++ = d | (t[i] | d) << 8;
+      *vram_ptr++ = (uint16)d | (uint16)((uint16)((uint8)(t[i] | d)) << 8);
     }
   }
 }
 
+
 void Do3To4Low(uint16 *vram_ptr, const uint8 *decomp_addr) {  // 80e63c
   for (int j = 0; j < 64; j++) {
-    for (int i = 0; i < 8; i++, decomp_addr += 2)
-      *vram_ptr++ = *(uint16 *)decomp_addr;
+    for (int i = 0; i < 8; i++, decomp_addr += 2) {
+      uint16 v = (uint16)decomp_addr[0] | ((uint16)decomp_addr[1] << 8);
+      *vram_ptr++ = v;
+    }
     for (int i = 0; i < 8; i++, decomp_addr += 1)
-      *vram_ptr++ = *decomp_addr;
+      *vram_ptr++ = decomp_addr[0];
   }
 }
 

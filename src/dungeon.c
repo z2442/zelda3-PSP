@@ -2664,7 +2664,9 @@ void Dungeon_LoadRoom() {  // 81873a
 void RoomDraw_DrawAllObjects(const uint8 *level_data) {  // 8188e4
   for (;;) {
     dung_draw_width_indicator = dung_draw_height_indicator = 0;
-    uint16 d = WORD(level_data[dung_load_ptr_offs]);
+    // Alignment-safe read of 16-bit word from level_data at dung_load_ptr_offs
+    uint16 d = (uint16)level_data[dung_load_ptr_offs + 0] |
+               ((uint16)level_data[dung_load_ptr_offs + 1] << 8);
     if (d == 0xffff)
       return;
     if (d == 0xfff0)
@@ -2673,7 +2675,9 @@ void RoomDraw_DrawAllObjects(const uint8 *level_data) {  // 8188e4
   }
   for (;;) {
     dung_load_ptr_offs += 2;
-    uint16 d = WORD(level_data[dung_load_ptr_offs]);
+    // Alignment-safe read of 16-bit word from level_data at dung_load_ptr_offs
+    uint16 d = (uint16)level_data[dung_load_ptr_offs + 0] |
+               ((uint16)level_data[dung_load_ptr_offs + 1] << 8);
     if (d == 0xffff)
       return;
     RoomData_DrawObject_Door(d);
@@ -3677,7 +3681,7 @@ void Dungeon_LoadHeader() {  // 81b564
   if (submodule_index == 0) {
     dung_loade_bgoffs_h_copy = BG2HOFS_copy2 & ~0x1FF;
     dung_loade_bgoffs_v_copy = BG2VOFS_copy2 & ~0x1FF;
-  } else if (submodule_index == 21 || submodule_index < 18 && submodule_index >= 6) {
+  } else if (submodule_index == 21 || (submodule_index < 18 && submodule_index >= 6)) {
     dung_loade_bgoffs_h_copy = (BG2HOFS_copy2 + 0x20) & ~0x1FF;
     dung_loade_bgoffs_v_copy = (BG2VOFS_copy2 + 0x20) & ~0x1FF;
   } else {
@@ -3721,17 +3725,26 @@ void Dungeon_LoadHeader() {  // 81b564
   dung_overlay_to_load = 0;
   dung_index_x3 = dungeon_room_index * 3;
 
-  uint16 x = save_dung_info[dungeon_room_index];
+  // Alignment-safe read of save_dung_info[dungeon_room_index] from SRAM (bytewise LE)
+  const uint8 *sd_bytes = (const uint8 *)save_dung_info;
+  uint16 x = (uint16)sd_bytes[dungeon_room_index * 2 + 0] |
+             ((uint16)sd_bytes[dungeon_room_index * 2 + 1] << 8);
+
   dung_door_opened = x & 0xf000;
   dung_door_opened_incl_adjacent = dung_door_opened | 0xf00;
   dung_savegame_state_bits = (x & 0xff0) << 4;
   dung_quadrants_visited = x & 0xf;
 
-  const uint16 *dp = GetRoomDoorInfo(dungeon_room_index);
-  int i = 0;
-  for (; dp[i] != 0xffff; i++)
-    dung_door_tilemap_address[i] = dp[i];
-  dung_door_tilemap_address[i] = 0;
+ const uint8 *dp_bytes = (const uint8 *)GetRoomDoorInfo(dungeon_room_index);
+int i = 0;
+for (;;) {
+  uint16 v = (uint16)dp_bytes[0] | ((uint16)dp_bytes[1] << 8);
+  if (v == 0xffff)
+    break;
+  dung_door_tilemap_address[i++] = v;
+  dp_bytes += 2;
+}
+dung_door_tilemap_address[i] = 0;
 
   if (((dungeon_room_index - 1) & 0xf) != 0xf)
     Dungeon_CheckAdjacentRoomsForOpenDoors(18, dungeon_room_index - 1);
@@ -3788,15 +3801,21 @@ void Dungeon_CheckAdjacentRoomsForOpenDoors(int idx, int room) {  // 81b759
 }
 
 void Dungeon_LoadAdjacentRoomDoors(int room) {  // 81b7ef
-  const uint16 *dp = GetRoomDoorInfo(room);
-  adjacent_doors_flags = (save_dung_info[room] & 0xf000) | 0xf00;
+  // Alignment-safe read of save_dung_info[room] (bytewise LE)
+  const uint8 *sd_bytes = (const uint8 *)save_dung_info;
+  uint16 s = (uint16)sd_bytes[room * 2 + 0] | ((uint16)sd_bytes[room * 2 + 1] << 8);
+  adjacent_doors_flags = (s & 0xf000) | 0xf00;
+
+  // Alignment-safe iteration over door info table (bytewise LE)
+  const uint8 *dp_bytes = (const uint8 *)GetRoomDoorInfo(room);
   for (int i = 0; ; i++) {
-    uint16 a = dp[i];
+    uint16 a = (uint16)dp_bytes[0] | ((uint16)dp_bytes[1] << 8);
     adjacent_doors[i] = a;
     if (a == 0xffff)
       break;
     if ((a & 0xff00) == 0x4000 || (a & 0xff00) < 0x200)
       adjacent_doors_flags |= kUpperBitmasks[i];
+    dp_bytes += 2;
   }
 }
 
@@ -5598,11 +5617,15 @@ void ManipBlock_Something(Point16U *pt) {  // 81db41
 void RevealPotItem(uint16 pos6, uint16 pos4) {  // 81e6b2
   BYTE(dung_secrets_unk1) = 0;
 
-  const uint8 *src_ptr = kDungeonSecrets + WORD(kDungeonSecrets[dungeon_room_index * 2]);
+  // Alignment-safe LE read of the offset into kDungeonSecrets
+  uint16 secrets_offs = (uint16)kDungeonSecrets[dungeon_room_index * 2 + 0] |
+                        ((uint16)kDungeonSecrets[dungeon_room_index * 2 + 1] << 8);
+  const uint8 *src_ptr = kDungeonSecrets + secrets_offs;
 
   int index = 0;
   for (;;) {
-    uint16 test_pos = *(uint16 *)src_ptr;
+    // Alignment-safe LE read of test_pos
+    uint16 test_pos = (uint16)src_ptr[0] | ((uint16)src_ptr[1] << 8);
     if (test_pos == 0xffff)
       return;
     assert(!(test_pos & 0x8000));
@@ -5736,7 +5759,8 @@ uint8 OpenChestForItem(uint8 tile, int *chest_position) {  // 81eb66
     int i;
     chest_data = kDungeonRoomChests;
     for (i = 0; i < kDungeonRoomChests_SIZE; i += 3, chest_data += 3) {
-      chest_room = *(uint16 *)chest_data;
+      const uint8 *p_chest = (const uint8 *)chest_data;
+      chest_room = (uint16)p_chest[0] | ((uint16)p_chest[1] << 8);
       if ((chest_room & 0x7fff) == dungeon_room_index && --chest_idx < 0) {
         data = chest_data[2];
         if (chest_room & 0x8000) {
