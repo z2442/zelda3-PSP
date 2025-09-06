@@ -39,8 +39,7 @@ static uint8 *g_upload_buffer;
 static size_t g_upload_buffer_size;
 static int g_draw_width, g_draw_height;
 static GlTextureWithSize g_texture;
-static GLuint g_stream_tex[2] = {0, 0};
-static int g_stream_cur = 0;
+static GLuint g_tex = 0;
 static int g_tex_max_w = 0, g_tex_max_h = 0;
 static bool g_has_bgra_ext = false;
 static bool g_has_npot_ext = false;
@@ -51,6 +50,7 @@ static GLfloat g_texcoords[8] = {
 };
 static bool g_opengl_es;
 static int g_last_w = -1, g_last_h = -1;
+static bool g_use_rgb565 = false; // prefer 16-bit on GLES devices (PSP)
 
 // --- extension check helper
 static bool has_extension(const char *exts, const char *needle) {
@@ -82,25 +82,22 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   SDL_GL_SetSwapInterval(1); // set to 0 for raw throughput
 
   detect_extensions();
+  // Prefer RGB565 on GLES to reduce bandwidth/VRAM (important on PSP)
+  g_use_rgb565 = g_opengl_es;
 
-  int dw=0, dh=0;
-  SDL_GL_GetDrawableSize(g_window, &dw, &dh);
-  if (dw <= 0 || dh <= 0) { dw = 512; dh = 512; }
-  g_tex_max_w = g_has_npot_ext ? dw : next_pot(dw);
-  g_tex_max_h = g_has_npot_ext ? dh : next_pot(dh);
+  // Defer allocating the texture until we know the draw size.
+  g_tex_max_w = 0;
+  g_tex_max_h = 0;
 
   glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
-  glGenTextures(2, g_stream_tex);
-  for (int i=0;i<2;i++) {
-    glBindTexture(GL_TEXTURE_2D, g_stream_tex[i]);
-    const GLint init_filter = g_config.linear_filtering ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, init_filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, init_filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_tex_max_w, g_tex_max_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  }
+  glGenTextures(1, &g_tex);
+  glBindTexture(GL_TEXTURE_2D, g_tex);
+  const GLint init_filter = g_config.linear_filtering ? GL_LINEAR : GL_NEAREST;
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, init_filter);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, init_filter);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   g_last_filter = g_config.linear_filtering ? GL_LINEAR : GL_NEAREST;
 
   glEnableClientState(GL_VERTEX_ARRAY);
@@ -124,7 +121,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   glTexCoordPointer(2, GL_FLOAT, 0, g_texcoords);
 
   glEnable(GL_TEXTURE_2D);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, g_use_rgb565 ? 2 : 4);
   glDisable(GL_DITHER);
 
   g_texture.gl_texture = 0;
@@ -139,9 +136,9 @@ static void OpenGLRenderer_Destroy() {
     glDeleteTextures(1, &g_texture.gl_texture);
     g_texture.gl_texture = 0;
   }
-  if (g_stream_tex[0] || g_stream_tex[1]) {
-    glDeleteTextures(2, g_stream_tex);
-    g_stream_tex[0] = g_stream_tex[1] = 0;
+  if (g_tex) {
+    glDeleteTextures(1, &g_tex);
+    g_tex = 0;
   }
   free(g_upload_buffer); g_upload_buffer = NULL; g_upload_buffer_size = 0;
   free(g_screen_buffer); g_screen_buffer = NULL; g_screen_buffer_size = 0;
@@ -177,6 +174,19 @@ static void swizzle_bgra_to_rgba(uint8 *dst, const uint8 *src, size_t px_count) 
   }
 }
 
+// Pack BGRA8888 -> RGB565 (little-endian)
+static void pack_bgra8888_to_rgb565(uint16_t *dst, const uint8 *src, size_t px_count) {
+  for (size_t i = 0; i < px_count; ++i) {
+    uint8 b = src[i * 4 + 0];
+    uint8 g = src[i * 4 + 1];
+    uint8 r = src[i * 4 + 2];
+    uint16_t rv = (uint16_t)((r >> 3) & 0x1F);
+    uint16_t gv = (uint16_t)((g >> 2) & 0x3F);
+    uint16_t bv = (uint16_t)((b >> 3) & 0x1F);
+    dst[i] = (uint16_t)((rv << 11) | (gv << 5) | (bv));
+  }
+}
+
 static void OpenGLRenderer_EndDraw() {
   int drawable_width = 0, drawable_height = 0;
   SDL_GL_GetDrawableSize(g_window, &drawable_width, &drawable_height);
@@ -198,22 +208,30 @@ static void OpenGLRenderer_EndDraw() {
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
 
-  GLuint upload_tex = g_stream_tex[g_stream_cur ^ 1];
-  glBindTexture(GL_TEXTURE_2D, upload_tex);
+  glBindTexture(GL_TEXTURE_2D, g_tex);
 
   const GLsizei w = (GLsizei)g_draw_width;
   const GLsizei h = (GLsizei)g_draw_height;
   const size_t px = (size_t)w * (size_t)h;
   const void *pixels;
   GLenum src_fmt;
-  if (g_has_bgra_ext) {
+  GLenum src_type;
+  if (g_use_rgb565) {
+    ensure_upload_buffer(px * 2);
+    pack_bgra8888_to_rgb565((uint16_t*)g_upload_buffer, g_screen_buffer, px);
+    pixels = g_upload_buffer;
+    src_fmt = GL_RGB;
+    src_type = GL_UNSIGNED_SHORT_5_6_5;
+  } else if (g_has_bgra_ext) {
     pixels = g_screen_buffer;
     src_fmt = GL_BGRA_EXT;
+    src_type = GL_UNSIGNED_BYTE;
   } else {
     ensure_upload_buffer(px * 4);
     swizzle_bgra_to_rgba(g_upload_buffer, g_screen_buffer, px);
     pixels = g_upload_buffer;
     src_fmt = GL_RGBA;
+    src_type = GL_UNSIGNED_BYTE;
   }
 
   const GLint filter = g_config.linear_filtering ? GL_LINEAR : GL_NEAREST;
@@ -223,7 +241,22 @@ static void OpenGLRenderer_EndDraw() {
     g_last_filter = filter;
   }
 
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, src_fmt, GL_UNSIGNED_BYTE, pixels);
+  // (Re)allocate texture storage if needed (first frame or size change)
+  int desired_w = g_has_npot_ext ? w : next_pot(w);
+  int desired_h = g_has_npot_ext ? h : next_pot(h);
+  if (desired_w != g_tex_max_w || desired_h != g_tex_max_h) {
+    GLenum internal_format = g_use_rgb565 ? GL_RGB : GL_RGBA;
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format,
+                 desired_w, desired_h, 0, internal_format,
+                 g_use_rgb565 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE,
+                 NULL);
+    g_tex_max_w = desired_w;
+    g_tex_max_h = desired_h;
+    // Force texcoord update
+    g_last_w = -1; g_last_h = -1;
+  }
+
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, src_fmt, src_type, pixels);
 
   if (g_last_w != w || g_last_h != h) {
     const GLfloat umax = (GLfloat)w / (GLfloat)g_tex_max_w;
@@ -235,8 +268,7 @@ static void OpenGLRenderer_EndDraw() {
     g_last_w = w; g_last_h = h;
   }
 
-  g_stream_cur ^= 1;
-  glBindTexture(GL_TEXTURE_2D, upload_tex);
+  glBindTexture(GL_TEXTURE_2D, g_tex);
 
   glClearColor(0.f, 0.f, 0.f, 1.f);
   glClear(GL_COLOR_BUFFER_BIT);
