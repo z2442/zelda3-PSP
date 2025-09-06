@@ -1270,44 +1270,15 @@ void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data) {
 }
 
 // =======================================
-#define WITH_SPC_PLAYER_DEBUGGING 1
+#define WITH_SPC_PLAYER_DEBUGGING 0
 
 #if WITH_SPC_PLAYER_DEBUGGING
 
-#ifdef __PSP__
-#include <pspaudio.h>
-#include <pspaudiolib.h>
-#include <pspkernel.h>
-#else
 #include <SDL2/SDL.h>
-#endif
 
 static DspRegWriteHistory my_write_hist;
 static SpcPlayer my_spc, my_spc_snapshot;
 static int loop_ctr;
-
-#ifdef __PSP__
-// Debug audio ring/callback state (PSP only, debug player)
-enum { RB_CAP = 8192 }; // frames per channel (power of two)
-static volatile int rb_head = 0, rb_tail = 0, rb_len = 0; // frames in ring
-static int16_t ring[RB_CAP * 2];
-static void audio_cb(void *buf, unsigned int reqn, void *userdata) {
-  (void)userdata;
-  int16_t *out = (int16_t*)buf;
-  unsigned int frames = reqn;
-  unsigned int copy = (rb_len < (int)frames) ? (unsigned int)rb_len : frames;
-  for (unsigned int i = 0; i < copy; ++i) {
-    unsigned int idx = (unsigned int)((rb_tail + (int)i) & (RB_CAP - 1));
-    out[i * 2 + 0] = ring[idx * 2 + 0];
-    out[i * 2 + 1] = ring[idx * 2 + 1];
-  }
-  if (copy < frames) {
-    memset(out + copy * 2, 0, (frames - copy) * 2 * sizeof(int16_t));
-  }
-  rb_tail = (rb_tail + (int)copy) & (RB_CAP - 1);
-  rb_len -= (int)copy;
-}
-#endif
 
 bool CompareSpcImpls(SpcPlayer *p, SpcPlayer *p_org, Apu *apu) {
   SpcPlayer_CopyVariablesToRam(p);
@@ -1354,15 +1325,11 @@ bool CompareSpcImpls(SpcPlayer *p, SpcPlayer *p_org, Apu *apu) {
 }
 
 void RunAudioPlayer() {
-#ifdef __PSP__
-  // PSP audio init: callback-driven output via pspaudiolib
-  pspAudioInit();
-  pspAudioSetChannelCallback(-1, audio_cb, NULL);
-#else
   if(SDL_Init(SDL_INIT_AUDIO) != 0) {
     printf("Failed to init SDL: %s\n", SDL_GetError());
     return;
   }
+  
   SDL_AudioSpec want, have;
   SDL_AudioDeviceID device;
   SDL_memset(&want, 0, sizeof(want));
@@ -1376,8 +1343,8 @@ void RunAudioPlayer() {
     printf("Failed to open audio device: %s\n", SDL_GetError());
     return;
   }
+  int16_t* audioBuffer = (int16_t*)malloc(735 * 4); // *2 for stereo, *2 for sizeof(int16)
   SDL_PauseAudioDevice(device, 0);
-#endif
 
   memset(&my_spc, 0, sizeof(my_spc));
   FILE *f = fopen("lightworld.spc", "rb");
@@ -1401,26 +1368,11 @@ void RunAudioPlayer() {
       SpcPlayer_GenerateSamples(p);
 
       int16_t audioBuffer[736 * 2];
-      dsp_getSamples(p->dsp, audioBuffer, 736, 2);
-#ifdef __PSP__
-      // Push into ring buffer; drop if overflow
-      int frames = 736;
-      int can_write = (int)(RB_CAP - rb_len);
-      if (frames > can_write) frames = can_write;
-      for (int i = 0; i < frames; ++i) {
-        int idx = (rb_head + i) & (RB_CAP - 1);
-        ring[idx * 2 + 0] = audioBuffer[i * 2 + 0];
-        ring[idx * 2 + 1] = audioBuffer[i * 2 + 1];
-      }
-      rb_head = (rb_head + frames) & (RB_CAP - 1);
-      rb_len += frames;
-      // Give the audio thread time to pull
-      sceKernelDelayThreadCB(1000);
-#else
-      SDL_QueueAudio(device, audioBuffer, 736 * 2 * 2);
-      while (SDL_GetQueuedAudioSize(device) >= 736 * 4 * 3)
+      dsp_getSamples(p->dsp, audioBuffer, 736, have.channels);
+      SDL_QueueAudio(device, audioBuffer, 736 * 2 * have.channels);
+      while (SDL_GetQueuedAudioSize(device) >= 736 * 4 * 3/* 44100 * 4 * 300*/)
         SDL_Delay(1);
-#endif
+
     }
 
   } else {
@@ -1444,7 +1396,9 @@ void RunAudioPlayer() {
     bool is_initialize = true;
     for (;;) {
       if (apu_debug && apu->cpuCyclesLeft == 0) {
-        // Debug print disabled on PSP build
+        char line[80];
+        getProcessorStateSpc(apu, line);
+        puts(line);
       }
 
       apu_cycle(apu);
@@ -1481,25 +1435,11 @@ void RunAudioPlayer() {
 
       if (p->dsp->sampleOffset == 534) {
         int16_t audioBuffer[736 * 2];
-        dsp_getSamples(p->dsp, audioBuffer, 736, 2);
-#ifdef __PSP__
-        int frames = 736;
-        int can_write = (int)(RB_CAP - rb_len);
-        if (frames > can_write) frames = can_write;
-        for (int i = 0; i < frames; ++i) {
-          int idx = (rb_head + i) & (RB_CAP - 1);
-          ring[idx * 2 + 0] = audioBuffer[i * 2 + 0];
-          ring[idx * 2 + 1] = audioBuffer[i * 2 + 1];
-        }
-        rb_head = (rb_head + frames) & (RB_CAP - 1);
-        rb_len += frames;
-        sceKernelDelayThreadCB(1000);
-#else
-        SDL_QueueAudio(device, audioBuffer, 736 * 2 * 2);
-        while (SDL_GetQueuedAudioSize(device) >= 736 * 4 * 3) {
+        dsp_getSamples(p->dsp, audioBuffer, 736, have.channels);
+        SDL_QueueAudio(device, audioBuffer, 736 * 2 * have.channels);
+        while (SDL_GetQueuedAudioSize(device) >= 736 * 4 * 3/* 44100 * 4 * 300*/) {
           SDL_Delay(1);
         }
-#endif
       }
     }
   }
