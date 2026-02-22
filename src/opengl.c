@@ -37,6 +37,8 @@ static uint8 *g_screen_buffer;
 static size_t g_screen_buffer_size;
 static uint8 *g_upload_buffer;
 static size_t g_upload_buffer_size;
+static uint8 *g_prev_frame_buffer;
+static size_t g_prev_frame_buffer_size;
 static int g_draw_width, g_draw_height;
 static GlTextureWithSize g_texture;
 static GLuint g_tex = 0;
@@ -51,6 +53,7 @@ static GLfloat g_texcoords[8] = {
 static bool g_opengl_es;
 static int g_last_w = -1, g_last_h = -1;
 static bool g_use_rgb565 = false; // prefer 16-bit on GLES devices (PSP)
+static int g_prev_frame_w = -1, g_prev_frame_h = -1;
 
 // --- extension check helper
 static bool has_extension(const char *exts, const char *needle) {
@@ -141,6 +144,7 @@ static void OpenGLRenderer_Destroy() {
     g_tex = 0;
   }
   free(g_upload_buffer); g_upload_buffer = NULL; g_upload_buffer_size = 0;
+  free(g_prev_frame_buffer); g_prev_frame_buffer = NULL; g_prev_frame_buffer_size = 0;
   free(g_screen_buffer); g_screen_buffer = NULL; g_screen_buffer_size = 0;
 }
 
@@ -164,27 +168,88 @@ static inline void ensure_upload_buffer(size_t bytes) {
   }
 }
 
-// Fast BGRA -> RGBA swizzle
-static void swizzle_bgra_to_rgba(uint8 *dst, const uint8 *src, size_t px_count) {
-  const uint32_t *s32 = (const uint32_t*)src;
-  uint32_t *d32 = (uint32_t*)dst;
-  for (size_t i = 0; i < px_count; ++i) {
-    uint32_t v = s32[i];
-    d32[i] = (v >> 16) | (v & 0xFF00FF00) | (v << 16);
+static inline void ensure_prev_frame_buffer(size_t bytes) {
+  if (bytes > g_prev_frame_buffer_size) {
+    g_prev_frame_buffer_size = ALIGN_UP(bytes, 4096);
+    g_prev_frame_buffer = (uint8*)realloc(g_prev_frame_buffer, g_prev_frame_buffer_size);
   }
 }
 
-// Pack BGRA8888 -> RGB565 (little-endian)
-static void pack_bgra8888_to_rgb565(uint16_t *dst, const uint8 *src, size_t px_count) {
-  for (size_t i = 0; i < px_count; ++i) {
-    uint8 b = src[i * 4 + 0];
-    uint8 g = src[i * 4 + 1];
-    uint8 r = src[i * 4 + 2];
-    uint16_t rv = (uint16_t)((r >> 3) & 0x1F);
-    uint16_t gv = (uint16_t)((g >> 2) & 0x3F);
-    uint16_t bv = (uint16_t)((b >> 3) & 0x1F);
-    dst[i] = (uint16_t)((rv << 11) | (gv << 5) | (bv));
+static void copy_bgra_rect_tightly(uint8 *dst, const uint8 *src, int src_w, int x, int y, int w, int h) {
+  const size_t row_bytes = (size_t)w * 4;
+  const size_t src_stride = (size_t)src_w * 4;
+  const uint8 *s = src + ((size_t)y * src_stride) + ((size_t)x * 4);
+  for (int row = 0; row < h; row++) {
+    memcpy(dst + (size_t)row * row_bytes, s + (size_t)row * src_stride, row_bytes);
   }
+}
+
+static void swizzle_bgra_rect_to_rgba(uint8 *dst, const uint8 *src, int src_w, int x, int y, int w, int h) {
+  const size_t src_stride_px = (size_t)src_w;
+  for (int row = 0; row < h; row++) {
+    const uint32_t *s32 = (const uint32_t*)src + ((size_t)(y + row) * src_stride_px) + (size_t)x;
+    uint32_t *d32 = (uint32_t*)dst + (size_t)row * (size_t)w;
+    for (int col = 0; col < w; col++) {
+      uint32_t v = s32[col];
+      d32[col] = (v >> 16) | (v & 0xFF00FF00) | (v << 16);
+    }
+  }
+}
+
+static void pack_bgra_rect_to_rgb565(uint16_t *dst, const uint8 *src, int src_w, int x, int y, int w, int h) {
+  const size_t src_stride = (size_t)src_w * 4;
+  const uint8 *base = src + ((size_t)y * src_stride) + ((size_t)x * 4);
+  for (int row = 0; row < h; row++) {
+    const uint8 *s = base + (size_t)row * src_stride;
+    uint16_t *d = dst + (size_t)row * (size_t)w;
+    for (int col = 0; col < w; col++) {
+      uint8 b = s[col * 4 + 0];
+      uint8 g = s[col * 4 + 1];
+      uint8 r = s[col * 4 + 2];
+      uint16_t rv = (uint16_t)((r >> 3) & 0x1F);
+      uint16_t gv = (uint16_t)((g >> 2) & 0x3F);
+      uint16_t bv = (uint16_t)((b >> 3) & 0x1F);
+      d[col] = (uint16_t)((rv << 11) | (gv << 5) | (bv));
+    }
+  }
+}
+
+// Computes dirty rect between current and previous frame.
+// Returns false when no pixel changed.
+static bool find_dirty_rect_bgra(const uint8 *cur, const uint8 *prev, int w, int h,
+                                 int *out_x, int *out_y, int *out_w, int *out_h) {
+  int min_x = w, min_y = h;
+  int max_x = -1, max_y = -1;
+  const size_t row_bytes = (size_t)w * 4;
+
+  for (int y = 0; y < h; y++) {
+    const uint8 *c = cur + (size_t)y * row_bytes;
+    const uint8 *p = prev + (size_t)y * row_bytes;
+    if (memcmp(c, p, row_bytes) == 0)
+      continue;
+
+    int left = 0;
+    int right = w - 1;
+    while (left < w && memcmp(c + (size_t)left * 4, p + (size_t)left * 4, 4) == 0)
+      left++;
+    while (right >= left && memcmp(c + (size_t)right * 4, p + (size_t)right * 4, 4) == 0)
+      right--;
+    if (left <= right) {
+      if (left < min_x) min_x = left;
+      if (right > max_x) max_x = right;
+      if (y < min_y) min_y = y;
+      if (y > max_y) max_y = y;
+    }
+  }
+
+  if (max_x < min_x || max_y < min_y)
+    return false;
+
+  *out_x = min_x;
+  *out_y = min_y;
+  *out_w = max_x - min_x + 1;
+  *out_h = max_y - min_y + 1;
+  return true;
 }
 
 static void OpenGLRenderer_EndDraw() {
@@ -212,26 +277,42 @@ static void OpenGLRenderer_EndDraw() {
 
   const GLsizei w = (GLsizei)g_draw_width;
   const GLsizei h = (GLsizei)g_draw_height;
-  const size_t px = (size_t)w * (size_t)h;
+  const size_t frame_bytes = (size_t)w * (size_t)h * 4;
+  ensure_prev_frame_buffer(frame_bytes);
+  bool same_size_as_prev = (g_prev_frame_w == w && g_prev_frame_h == h);
+  int upload_x = 0, upload_y = 0, upload_w = w, upload_h = h;
+  bool has_dirty = !same_size_as_prev ||
+                   find_dirty_rect_bgra(g_screen_buffer, g_prev_frame_buffer, w, h,
+                                        &upload_x, &upload_y, &upload_w, &upload_h);
   const void *pixels;
   GLenum src_fmt;
   GLenum src_type;
-  if (g_use_rgb565) {
-    ensure_upload_buffer(px * 2);
-    pack_bgra8888_to_rgb565((uint16_t*)g_upload_buffer, g_screen_buffer, px);
-    pixels = g_upload_buffer;
-    src_fmt = GL_RGB;
-    src_type = GL_UNSIGNED_SHORT_5_6_5;
-  } else if (g_has_bgra_ext) {
-    pixels = g_screen_buffer;
-    src_fmt = GL_BGRA_EXT;
-    src_type = GL_UNSIGNED_BYTE;
-  } else {
-    ensure_upload_buffer(px * 4);
-    swizzle_bgra_to_rgba(g_upload_buffer, g_screen_buffer, px);
-    pixels = g_upload_buffer;
-    src_fmt = GL_RGBA;
-    src_type = GL_UNSIGNED_BYTE;
+  if (has_dirty) {
+    const size_t upload_px = (size_t)upload_w * (size_t)upload_h;
+    if (g_use_rgb565) {
+      ensure_upload_buffer(upload_px * 2);
+      pack_bgra_rect_to_rgb565((uint16_t*)g_upload_buffer, g_screen_buffer,
+                               w, upload_x, upload_y, upload_w, upload_h);
+      pixels = g_upload_buffer;
+      src_fmt = GL_RGB;
+      src_type = GL_UNSIGNED_SHORT_5_6_5;
+    } else if (g_has_bgra_ext) {
+      if (upload_x == 0 && upload_w == w) {
+        pixels = g_screen_buffer + ((size_t)upload_y * (size_t)w * 4);
+      } else {
+        ensure_upload_buffer(upload_px * 4);
+        copy_bgra_rect_tightly(g_upload_buffer, g_screen_buffer, w, upload_x, upload_y, upload_w, upload_h);
+        pixels = g_upload_buffer;
+      }
+      src_fmt = GL_BGRA_EXT;
+      src_type = GL_UNSIGNED_BYTE;
+    } else {
+      ensure_upload_buffer(upload_px * 4);
+      swizzle_bgra_rect_to_rgba(g_upload_buffer, g_screen_buffer, w, upload_x, upload_y, upload_w, upload_h);
+      pixels = g_upload_buffer;
+      src_fmt = GL_RGBA;
+      src_type = GL_UNSIGNED_BYTE;
+    }
   }
 
   const GLint filter = g_config.linear_filtering ? GL_LINEAR : GL_NEAREST;
@@ -256,7 +337,9 @@ static void OpenGLRenderer_EndDraw() {
     g_last_w = -1; g_last_h = -1;
   }
 
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, src_fmt, src_type, pixels);
+  if (has_dirty) {
+    glTexSubImage2D(GL_TEXTURE_2D, 0, upload_x, upload_y, upload_w, upload_h, src_fmt, src_type, pixels);
+  }
 
   if (g_last_w != w || g_last_h != h) {
     const GLfloat umax = (GLfloat)w / (GLfloat)g_tex_max_w;
@@ -276,6 +359,10 @@ static void OpenGLRenderer_EndDraw() {
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
   SDL_GL_SwapWindow(g_window);
+
+  memcpy(g_prev_frame_buffer, g_screen_buffer, frame_bytes);
+  g_prev_frame_w = w;
+  g_prev_frame_h = h;
 }
 
 static const struct RendererFuncs kOpenGLRendererFuncs = {
