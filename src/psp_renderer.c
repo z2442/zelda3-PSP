@@ -19,7 +19,7 @@ enum {
   kPspFrameStride = 512,
   kPspFrameBytes = kPspFrameStride * kPspScreenHeight * 2,
   kPspTextureOffset = kPspFrameBytes * 2,
-  kPspTextureCapacity = 512 * 256 * 4,
+  kPspTextureCapacity = 512 * 256 * 2,
 };
 
 typedef struct PspSpriteVertex {
@@ -83,7 +83,7 @@ static void PspRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
   const int texture_width = NextPowerOfTwo(width);
   const int texture_height = NextPowerOfTwo(height);
   const int texture_stride = (width + 15) & ~15;
-  const size_t needed = (size_t)texture_stride * texture_height * 4;
+  const size_t needed = (size_t)texture_stride * texture_height * 2;
 
   // The PSP GE supports textures up to 512x512. Enhanced 4x Mode 7 is
   // disabled by main.c on PSP so the normal framebuffer always fits.
@@ -99,7 +99,7 @@ static void PspRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
   g_texture_height = texture_height;
   g_texture_stride = texture_stride;
   *pixels = g_pixels;
-  *pitch = texture_stride * 4;
+  *pitch = texture_stride * 2;
 }
 
 static void PspRenderer_EndDraw(void) {
@@ -121,7 +121,7 @@ static void PspRenderer_EndDraw(void) {
 
   sceGuStart(GU_DIRECT, g_gu_list);
   sceGuClear(GU_COLOR_BUFFER_BIT);
-  sceGuTexMode(GU_PSM_8888, 0, 0, GU_FALSE);
+  sceGuTexMode(GU_PSM_5650, 0, 0, GU_FALSE);
   sceGuTexImage(0, g_texture_width, g_texture_height, g_texture_stride, g_pixels);
   sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
   sceGuTexFilter(g_config.linear_filtering ? GU_LINEAR : GU_NEAREST,

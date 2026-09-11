@@ -396,6 +396,9 @@ int main(int argc, char** argv) {
   g_config.output_method = kOutputMethod_SDL;
   // A 4x Mode 7 surface is wider than the PSP GE's 512-pixel texture limit.
   g_config.enhanced_mode7 = false;
+  // Match the real SNES scanline limits. Unlimited sprite slivers can make
+  // busy overworld scenes disproportionately expensive on the PSP CPU.
+  g_config.no_sprite_limits = false;
 #endif
   LoadAssets();
   LoadLinkGraphics();
@@ -642,13 +645,21 @@ static void RenderDigit(uint8 *dst, size_t pitch, int digit, uint32 color, bool 
     0x3e, 0x63, 0x63, 0x63, 0x3e, 0x63, 0x63, 0x63, 0x63, 0x3e,
     0x3e, 0x63, 0x63, 0x63, 0x7e, 0x60, 0x60, 0x60, 0x30, 0x1e,
   };
+#ifdef __PSP__
+  uint16 psp_color = (color >> 19) | (color >> 5 & 0x7e0) | (color << 8 & 0xf800);
+#endif
   const uint8 *p = kFont + digit * 10;
   if (!big) {
     for (int y = 0; y < 10; y++, dst += pitch) {
       int v = *p++;
       for (int x = 0; v; x++, v >>= 1) {
-        if (v & 1)
+        if (v & 1) {
+#ifdef __PSP__
+          ((uint16 *)dst)[x] = psp_color;
+#else
           ((uint32 *)dst)[x] = color;
+#endif
+        }
       }
     }
   } else {
@@ -656,8 +667,13 @@ static void RenderDigit(uint8 *dst, size_t pitch, int digit, uint32 color, bool 
       int v = *p++;
       for (int x = 0; v; x++, v >>= 1) {
         if (v & 1) {
+#ifdef __PSP__
+          ((uint16 *)dst)[x * 2 + 1] = ((uint16 *)dst)[x * 2] = psp_color;
+          ((uint16 *)(dst+pitch))[x * 2 + 1] = ((uint16 *)(dst + pitch))[x * 2] = psp_color;
+#else
           ((uint32 *)dst)[x * 2 + 1] = ((uint32 *)dst)[x * 2] = color;
           ((uint32 *)(dst+pitch))[x * 2 + 1] = ((uint32 *)(dst + pitch))[x * 2] = color;
+#endif
         }
       }
     }
@@ -668,9 +684,15 @@ static void RenderNumber(uint8 *dst, size_t pitch, int n, bool big) {
   char buf[32], *s;
   int i;
   sprintf(buf, "%d", n);
-  for (s = buf, i = 2 * 4; *s; s++, i += 8 * 4)
-    RenderDigit(dst + ((pitch + i + 4) << big), pitch, *s - '0', 0x404040, big);
-  for (s = buf, i = 2 * 4; *s; s++, i += 8 * 4)
+  const int bytes_per_pixel =
+#ifdef __PSP__
+      2;
+#else
+      4;
+#endif
+  for (s = buf, i = 2 * bytes_per_pixel; *s; s++, i += 8 * bytes_per_pixel)
+    RenderDigit(dst + ((pitch + i + bytes_per_pixel) << big), pitch, *s - '0', 0x404040, big);
+  for (s = buf, i = 2 * bytes_per_pixel; *s; s++, i += 8 * bytes_per_pixel)
     RenderDigit(dst + (i << big), pitch, *s - '0', 0xffffff, big);
 }
 

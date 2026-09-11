@@ -3564,7 +3564,9 @@ fail:
 
   const uint8 *ptr = kOverworldSecrets + kOverworldSecrets_Offs[overworld_screen_index];
   for (;;) {
-    uint16 x = *(uint16 *)ptr;
+    // Secret records are packed in three bytes, so every other record starts
+    // at an odd address. MIPS `lhu` traps on those entries.
+    uint16 x = ptr[0] | ptr[1] << 8;
     if (x == 0xffff)
       goto fail;
     if ((x & 0x7fff) == pos)

@@ -34,6 +34,18 @@ enum {
   kWindow2Enabled = 8,
 };
 
+#ifdef __PSP__
+typedef uint16 PpuOutputPixel;
+static inline PpuOutputPixel PpuMapOutputColor(const uint8 *map, uint32 r, uint32 g, uint32 b) {
+  return (map[r] >> 3) | (map[g] >> 2) << 5 | (map[b] >> 3) << 11;
+}
+#else
+typedef uint32 PpuOutputPixel;
+static inline PpuOutputPixel PpuMapOutputColor(const uint8 *map, uint32 r, uint32 g, uint32 b) {
+  return map[b] | map[g] << 8 | map[r] << 16;
+}
+#endif
+
 Ppu* ppu_init(Ppu* snes) {
   Ppu* ppu = (Ppu * )malloc(sizeof(Ppu));
   ppu->extraLeftRight = kPpuExtraLeftRight;
@@ -180,7 +192,7 @@ void ppu_runLine(Ppu *ppu, int line) {
 
     // outside of visible range?
     if (line >= 225 + ppu->extraBottomCur) {
-      memset(&ppu->renderBuffer[(line - 1) * ppu->renderPitch], 0, sizeof(uint32) * (256 + ppu->extraLeftRight * 2));
+      memset(&ppu->renderBuffer[(line - 1) * ppu->renderPitch], 0, sizeof(PpuOutputPixel) * (256 + ppu->extraLeftRight * 2));
       return;
     }
 
@@ -194,8 +206,8 @@ void ppu_runLine(Ppu *ppu, int line) {
 
       uint8 *dst = ppu->renderBuffer + ((line - 1) * ppu->renderPitch);
       if (ppu->extraLeftRight != 0) {
-        memset(dst, 0, sizeof(uint32) * ppu->extraLeftRight);
-        memset(dst + sizeof(uint32) * (256 + ppu->extraLeftRight), 0, sizeof(uint32) * ppu->extraLeftRight);
+        memset(dst, 0, sizeof(PpuOutputPixel) * ppu->extraLeftRight);
+        memset(dst + sizeof(PpuOutputPixel) * (256 + ppu->extraLeftRight), 0, sizeof(PpuOutputPixel) * ppu->extraLeftRight);
       }
     }
   }
@@ -848,7 +860,7 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
 static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
   if (ppu->forcedBlank) {
     uint8 *dst = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
-    size_t n = sizeof(uint32) * (256 + ppu->extraLeftRight * 2);
+    size_t n = sizeof(PpuOutputPixel) * (256 + ppu->extraLeftRight * 2);
     memset(dst, 0, n);
     return;
   }
@@ -887,7 +899,7 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
   uint32 cw_clip_math = ((cwin.bits & kCwBitsMod[ppu->clipMode]) ^ kCwBitsMod[ppu->clipMode + 4]) |
                         ((cwin.bits & kCwBitsMod[ppu->preventMathMode]) ^ kCwBitsMod[ppu->preventMathMode + 4]) << 8;
 
-  uint32 *dst = (uint32*)&ppu->renderBuffer[(y - 1) * ppu->renderPitch], *dst_org = dst;
+  PpuOutputPixel *dst = (PpuOutputPixel*)&ppu->renderBuffer[(y - 1) * ppu->renderPitch], *dst_org = dst;
   
   dst += (ppu->extraLeftRight - ppu->extraLeftCur);
 
@@ -898,20 +910,41 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
     uint32 clip_color_mask = (cw_clip_math & 1) ? 0x1f : 0;
     uint32 math_enabled_cur = (cw_clip_math & 0x100) ? math_enabled : 0;
     uint32 fixed_color = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
-    if (math_enabled_cur == 0 || fixed_color == 0 && !ppu->halfColor && !rendered_subscreen) {
+    if (rendered_subscreen && ppu->addSubscreen && ppu->halfColor && !ppu->subtractColor) {
+      // Rain and several transparency effects use additive half-color math
+      // against a subscreen. Keep its invariant mode tests outside the pixel
+      // loop; this is a particularly hot path on the PSP.
+      uint32 i = left;
+      do {
+        uint32 main_pixel = ppu->bgBuffers[0].data[i];
+        uint32 color = ppu->cgram[main_pixel & 0xff];
+        uint32 r = color & clip_color_mask;
+        uint32 g = (color >> 5) & clip_color_mask;
+        uint32 b = (color >> 10) & clip_color_mask;
+        uint8 *color_map = ppu->brightnessMult;
+
+        if (math_enabled_cur & (1 << ((main_pixel >> 8) & 0xf))) {
+          uint32 sub_pixel = ppu->bgBuffers[1].data[i] & 0xff;
+          uint32 color2 = fixed_color;
+          if (sub_pixel != 0) {
+            color2 = ppu->cgram[sub_pixel];
+            color_map = ppu->brightnessMultHalf;
+          }
+          r += color2 & 0x1f;
+          g += (color2 >> 5) & 0x1f;
+          b += (color2 >> 10) & 0x1f;
+        }
+        dst[0] = PpuMapOutputColor(color_map, r, g, b);
+      } while (dst++, ++i < right);
+    } else if (math_enabled_cur == 0 || fixed_color == 0 && !ppu->halfColor && !rendered_subscreen) {
       // Math is disabled (or has no effect), so can avoid the per-pixel maths check
       uint32 i = left;
       do {
         uint32 color = ppu->cgram[ppu->bgBuffers[0].data[i] & 0xff];
-#ifdef __PSP__
-        dst[0] = ppu->brightnessMult[color & clip_color_mask] |
-                 ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
-                 ppu->brightnessMult[(color >> 10) & clip_color_mask] << 16;
-#else
-        dst[0] = ppu->brightnessMult[color & clip_color_mask] << 16 |
-                 ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
-                 ppu->brightnessMult[(color >> 10) & clip_color_mask];
-#endif
+        dst[0] = PpuMapOutputColor(ppu->brightnessMult,
+                                   color & clip_color_mask,
+                                   (color >> 5) & clip_color_mask,
+                                   (color >> 10) & clip_color_mask);
       } while (dst++, ++i < right);
     } else {
       uint8 *half_color_map = ppu->halfColor ? ppu->brightnessMultHalf : ppu->brightnessMult;
@@ -946,21 +979,17 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
             b += b2;
           }
         }
-#ifdef __PSP__
-        dst[0] = color_map[r] | color_map[g] << 8 | color_map[b] << 16;
-#else
-        dst[0] = color_map[b] | color_map[g] << 8 | color_map[r] << 16;
-#endif
+        dst[0] = PpuMapOutputColor(color_map, r, g, b);
       } while (dst++, ++i < right);
     }
   } while (cw_clip_math >>= 1, ++windex < cwin.nr);
 
   // Clear out stuff on the sides.
   if (ppu->extraLeftRight - ppu->extraLeftCur != 0)
-    memset(dst_org, 0, sizeof(uint32) * (ppu->extraLeftRight - ppu->extraLeftCur));
+    memset(dst_org, 0, sizeof(PpuOutputPixel) * (ppu->extraLeftRight - ppu->extraLeftCur));
   if (ppu->extraLeftRight - ppu->extraRightCur != 0)
     memset(dst_org + (256 + ppu->extraLeftRight * 2 - (ppu->extraLeftRight - ppu->extraRightCur)), 0,
-        sizeof(uint32) * (ppu->extraLeftRight - ppu->extraRightCur));
+        sizeof(PpuOutputPixel) * (ppu->extraLeftRight - ppu->extraRightCur));
 }
 
 static void ppu_handlePixel(Ppu* ppu, int x, int y) {
@@ -1016,17 +1045,8 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
     }
   }
   int row = y - 1;
-  uint8 *pixelBuffer = (uint8*) &ppu->renderBuffer[row * ppu->renderPitch + (x + ppu->extraLeftRight) * 4];
-#ifdef __PSP__
-  pixelBuffer[0] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
-  pixelBuffer[1] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
-  pixelBuffer[2] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
-#else
-  pixelBuffer[0] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
-  pixelBuffer[1] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
-  pixelBuffer[2] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
-#endif
-  pixelBuffer[3] = 0;
+  PpuOutputPixel *pixelBuffer = (PpuOutputPixel *)&ppu->renderBuffer[row * ppu->renderPitch];
+  pixelBuffer[x + ppu->extraLeftRight] = PpuMapOutputColor(ppu->brightnessMult, r, g, b);
 }
 
 static const int bitDepthsPerMode[10][4] = {
