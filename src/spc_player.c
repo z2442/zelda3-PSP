@@ -2,6 +2,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#ifdef __PSP__
+#include <malloc.h>
+#endif
 #include "types.h"
 
 #include "snes/spc.h"
@@ -1186,7 +1189,13 @@ static void Interrupt_Reset(SpcPlayer *p) {
 }
 
 SpcPlayer *SpcPlayer_Create() {
+#ifdef __PSP__
+  // The Media Engine and Allegrex exchange this object through their caches.
+  // Own complete cache lines so synchronization never touches heap neighbors.
+  SpcPlayer *p = (SpcPlayer *)memalign(64, (sizeof(SpcPlayer) + 63) & ~63);
+#else
   SpcPlayer *p = (SpcPlayer *)malloc(sizeof(SpcPlayer));
+#endif
   p->dsp = dsp_init(p->ram);
   p->reg_write_history = 0;
   return p;

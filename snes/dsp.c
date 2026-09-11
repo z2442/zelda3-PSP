@@ -8,6 +8,9 @@
 #include <limits.h>
 #include "dsp_regs.h"
 #include "dsp.h"
+#ifdef __PSP__
+#include <malloc.h>
+#endif
 
 #define MY_CHANGES 1
 
@@ -61,7 +64,12 @@ static int16_t dsp_getSample(Dsp* dsp, int ch, int sampleNum, int offset);
 static void dsp_handleNoise(Dsp* dsp);
 
 Dsp* dsp_init(uint8_t *apu_ram) {
+#ifdef __PSP__
+  // Keep the ME-owned DSP state isolated to complete cache lines.
+  Dsp* dsp = (Dsp*)memalign(64, (sizeof(Dsp) + 63) & ~63);
+#else
   Dsp* dsp = (Dsp*)malloc(sizeof(Dsp));
+#endif
   dsp->apu_ram = apu_ram;
   return dsp;
 }

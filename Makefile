@@ -9,12 +9,12 @@ HOST_PYTHON ?= python3
 VENV ?= .venv
 PYTHON := $(VENV)/bin/python3
 PYTHON_DEPS := $(VENV)/.requirements-installed
-CFLAGS := $(if $(CFLAGS),$(CFLAGS),-g -O2 -Werror) -I .
+CFLAGS := $(if $(CFLAGS),$(CFLAGS),-g -O2 -Werror) -G0 -I .
 CFLAGS += #$(shell psp-config --cflags) -DSYSTEM_VOLUME_MIXER_AVAILABLE=0
-LDFLAGS := #$(shell psp-config --ldflags)
+LDFLAGS := -G0 #$(shell psp-config --ldflags)
 
 # PSP-specific modules and libraries
-LIBS = -lSDL2 -lGL -lz -lpspvfpu -lpspfpu -lpsphprm -lpspsdk -lpspctrl -lpspumd -lpsprtc \
+LIBS = -lSDL2 -lGL -lz -lme-core -lpspvfpu -lpspfpu -lpsphprm -lpspsdk -lpspctrl -lpspumd -lpsprtc \
        -lpsppower -lpspgum -lpspgu -lpspge -lpspaudiolib -lpspaudio -lpsphttp -lpspssl -lpspwlan \
 	   -lpspnet_adhocmatching -lpspnet_adhoc -lpspnet_adhocctl -lm -lpspvram -lpspdisplay
 

@@ -7,6 +7,9 @@
 #include "third_party/opus-1.3.1-stripped/opus.h"
 #include "config.h"
 #include "assets.h"
+#ifdef __PSP__
+#include "psp_audio_me.h"
+#endif
 
 // This needs to hold a lot more things than with just PCM
 typedef struct MsuPlayerResumeInfo {
@@ -402,26 +405,26 @@ struct ApuWriteEnt {
 };
 static struct ApuWriteEnt g_apu_write_ents[16], g_apu_write;
 static uint8 g_apu_write_ent_pos, g_apu_write_count, g_apu_total_write;
+static uint8 g_last_audio_ports[4];
 void zelda_apu_write(uint32_t adr, uint8_t val) {
   g_apu_write.ports[adr & 0x3] = val;
 }
 
 void ZeldaPushApuState() {
+#ifndef __PSP__
   ZeldaApuLock();
+#endif
   g_apu_write_ents[g_apu_write_ent_pos++ & 0xf] = g_apu_write;
   if (g_apu_write_count < 16)
     g_apu_write_count++;
   g_apu_total_write++;
+#ifndef __PSP__
   ZeldaApuUnlock();
-}
-
-static void ZeldaPopApuState() {
-  if (g_apu_write_count != 0)
-    memcpy(g_zenv.player->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count--) & 0xf], 4);
+#endif
 }
 
 void ZeldaDiscardUnusedAudioFrames() {
-  if (g_apu_write_count != 0 && memcmp(g_zenv.player->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count) & 0xf], 4) == 0) {
+  if (g_apu_write_count != 0 && memcmp(g_last_audio_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count) & 0xf], 4) == 0) {
     if (g_apu_total_write >= 16) {
       g_apu_total_write = 14;
       g_apu_write_count--;
@@ -444,14 +447,33 @@ uint8_t zelda_read_apui00() {
 }
 
 uint8_t zelda_apu_read(uint32_t adr) {
+#ifdef __PSP__
+  if (PspAudioMe_IsActive())
+    return PspAudioMe_ReadPort(adr & 3);
+#endif
   return g_zenv.player->port_to_snes[adr & 0x3];
+}
+
+void ZeldaPrepareAudioFrame(uint8 ports[4]) {
+  if (g_apu_write_count != 0)
+    memcpy(ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count--) & 0xf], 4);
+  else
+    memcpy(ports, g_apu_write.ports, 4);
+  memcpy(g_last_audio_ports, ports, 4);
+}
+
+void ZeldaRenderAudioPrepared(SpcPlayer *player, int16 *audio_buffer,
+                              int samples, int channels, const uint8 ports[4]) {
+  memcpy(player->input_ports, ports, 4);
+  SpcPlayer_GenerateSamples(player);
+  dsp_getSamples(player->dsp, audio_buffer, samples, channels);
 }
 
 void ZeldaRenderAudio(int16 *audio_buffer, int samples, int channels) {
   ZeldaApuLock();
-  ZeldaPopApuState();
-  SpcPlayer_GenerateSamples(g_zenv.player);
-  dsp_getSamples(g_zenv.player->dsp, audio_buffer, samples, channels);
+  uint8 ports[4];
+  ZeldaPrepareAudioFrame(ports);
+  ZeldaRenderAudioPrepared(g_zenv.player, audio_buffer, samples, channels, ports);
   if (g_msu_player.f && channels == 2)
     MsuPlayer_Mix(&g_msu_player, audio_buffer, samples);
   ZeldaApuUnlock();
@@ -461,6 +483,10 @@ bool ZeldaIsMusicPlaying() {
   if (g_msu_player.state != kMsuState_Idle) {
     return g_msu_player.state != kMsuState_FinishedPlaying;
   } else {
+#ifdef __PSP__
+    if (PspAudioMe_IsActive())
+      return PspAudioMe_ReadPort(0) != 0;
+#endif
     return g_zenv.player->port_to_snes[0] != 0;
   }
 }

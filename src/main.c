@@ -26,6 +26,9 @@
 #include "load_gfx.h"
 #include "util.h"
 #include "audio.h"
+#ifdef __PSP__
+#include "psp_audio_me.h"
+#endif
 
 #include <pspkernel.h>
 #include <psppower.h>
@@ -217,6 +220,35 @@ static int g_frames_per_block;
 static uint8 g_audio_channels;
 
 static void SDLCALL AudioCallback(void *userdata, Uint8 *stream, int len) {
+#ifdef __PSP__
+  if (PspAudioMe_IsActive()) {
+    while (len != 0) {
+      if (g_audiobuffer_end - g_audiobuffer_cur == 0) {
+        uint8 ports[4];
+        if (SDL_LockMutex(g_audio_mutex)) Die("Mutex lock failed!");
+        ZeldaPrepareAudioFrame(ports);
+        SDL_UnlockMutex(g_audio_mutex);
+        PspAudioMe_Render((int16 *)g_audiobuffer, g_frames_per_block, g_audio_channels, ports);
+        g_audiobuffer_cur = g_audiobuffer;
+        g_audiobuffer_end = g_audiobuffer + g_frames_per_block * g_audio_channels * sizeof(int16);
+      }
+      int n = IntMin(len, g_audiobuffer_end - g_audiobuffer_cur);
+      if (g_sdl_audio_mixer_volume == SDL_MIX_MAXVOLUME) {
+        memcpy(stream, g_audiobuffer_cur, n);
+      } else {
+        SDL_memset(stream, 0, n);
+        SDL_MixAudioFormat(stream, g_audiobuffer_cur, AUDIO_S16, n, g_sdl_audio_mixer_volume);
+      }
+      g_audiobuffer_cur += n;
+      stream += n;
+      len -= n;
+    }
+    if (SDL_LockMutex(g_audio_mutex)) Die("Mutex lock failed!");
+    ZeldaDiscardUnusedAudioFrames();
+    SDL_UnlockMutex(g_audio_mutex);
+    return;
+  }
+#endif
   if (SDL_LockMutex(g_audio_mutex)) Die("Mutex lock failed!");
   while (len != 0) {
     if (g_audiobuffer_end - g_audiobuffer_cur == 0) {
@@ -450,6 +482,14 @@ int main(int argc, char** argv) {
   if (!g_audio_mutex) Die("No mutex");
 
   if (g_config.enable_audio) {
+#ifdef __PSP__
+    if (!g_config.enable_msu) {
+      if (PspAudioMe_Init(g_zenv.player))
+        printf("PSP: SPC/DSP audio running on Media Engine\n");
+      else
+        fprintf(stderr, "PSP: Media Engine audio unavailable; using CPU fallback\n");
+    }
+#endif
     want.freq = g_config.audio_freq;
     want.format = AUDIO_S16;
     want.channels = g_config.audio_channels;
@@ -573,6 +613,9 @@ int main(int argc, char** argv) {
   if (g_config.enable_audio) {
     SDL_PauseAudioDevice(device, 1);
     SDL_CloseAudioDevice(device);
+#ifdef __PSP__
+    PspAudioMe_Shutdown();
+#endif
   }
 
   SDL_DestroyMutex(g_audio_mutex);
@@ -657,9 +700,15 @@ static void HandleCommand(uint32 j, bool pressed) {
 
 void ZeldaApuLock() {
   SDL_LockMutex(g_audio_mutex);
+#ifdef __PSP__
+  PspAudioMe_LockState();
+#endif
 }
 
 void ZeldaApuUnlock() {
+#ifdef __PSP__
+  PspAudioMe_UnlockState();
+#endif
   SDL_UnlockMutex(g_audio_mutex);
 }
 
