@@ -92,7 +92,7 @@ enum {
 };
 
 static const char kWindowTitle[] = "The Legend of Zelda: A Link to the Past";
-static uint32 g_win_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
+static uint32 g_win_flags = SDL_WINDOW_SHOWN;
 static SDL_Window *g_window;
 
 static uint8 g_paused, g_turbo, g_replay_turbo = true, g_cursor = true;
@@ -250,15 +250,27 @@ static bool SdlRenderer_Init(SDL_Window *window) {
   if (g_config.shader)
     fprintf(stderr, "Warning: Shaders are supported only with the OpenGL backend\n");
 
-  SDL_Renderer *renderer = SDL_CreateRenderer(g_window, -1,
-                                              g_config.output_method == kOutputMethod_SDLSoftware ? SDL_RENDERER_SOFTWARE :
-                                              SDL_RENDERER_ACCELERATED );
+  Uint32 renderer_flags = g_config.output_method == kOutputMethod_SDLSoftware ?
+                          SDL_RENDERER_SOFTWARE : SDL_RENDERER_ACCELERATED;
+#ifdef __PSP__
+  renderer_flags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
+#endif
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, renderer_flags);
   if (renderer == NULL) {
     printf("Failed to create renderer: %s\n", SDL_GetError());
     return false;
   }
   SDL_RendererInfo renderer_info;
   SDL_GetRendererInfo(renderer, &renderer_info);
+#ifdef __PSP__
+  // SDL's PSP renderer is a GU/GE backend.  Refuse an accidental software
+  // fallback: it is far too slow for the PPU framebuffer at 60 Hz.
+  if ((renderer_info.flags & SDL_RENDERER_ACCELERATED) == 0) {
+    fprintf(stderr, "PSP hardware renderer unavailable (got %s)\n", renderer_info.name);
+    SDL_DestroyRenderer(renderer);
+    return false;
+  }
+#endif
   if (kDebugFlag) {
     printf("Supported texture formats:");
     for (int i = 0; i < renderer_info.num_texture_formats; i++)
@@ -272,10 +284,19 @@ static bool SdlRenderer_Init(SDL_Window *window) {
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "best");
 
   int tex_mult = (g_ppu_render_flags & kPpuRenderFlags_4x4Mode7) ? 4 : 1;
-  g_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+  // The PSP GU renderer supports ABGR8888 directly. PpuBeginDrawing emits
+  // that layout on PSP, avoiding SDL's per-frame ARGB -> ABGR conversion.
+#ifdef __PSP__
+  const Uint32 texture_format = SDL_PIXELFORMAT_ABGR8888;
+#else
+  const Uint32 texture_format = SDL_PIXELFORMAT_ARGB8888;
+#endif
+  g_texture = SDL_CreateTexture(renderer, texture_format, SDL_TEXTUREACCESS_STREAMING,
                                 g_snes_width * tex_mult, g_snes_height * tex_mult);
   if (g_texture == NULL) {
     printf("Failed to create texture: %s\n", SDL_GetError());
+    SDL_DestroyRenderer(renderer);
+    g_renderer = NULL;
     return false;
   }
   return true;
@@ -315,6 +336,9 @@ static const struct RendererFuncs kSdlRendererFuncs  = {
 };
 
 void OpenGLRenderer_Create(struct RendererFuncs *funcs, bool use_opengl_es);
+#ifdef __PSP__
+void PspRenderer_Create(struct RendererFuncs *funcs);
+#endif
 
 
 #undef main
@@ -333,6 +357,14 @@ int main(int argc, char** argv) {
     SwitchDirectory();
   }
   ParseConfigFile(config_file);
+#ifdef __PSP__
+  // The native GU path bypasses SDL/PSPGL texture conversion and upload work.
+  if (g_config.output_method != kOutputMethod_SDL)
+    fprintf(stderr, "PSP: overriding video output with the native GU renderer\n");
+  g_config.output_method = kOutputMethod_SDL;
+  // A 4x Mode 7 surface is wider than the PSP GE's 512-pixel texture limit.
+  g_config.enhanced_mode7 = false;
+#endif
   LoadAssets();
   LoadLinkGraphics();
 
@@ -382,6 +414,9 @@ int main(int argc, char** argv) {
   int window_width  = custom_size ? g_config.window_width  : g_current_window_scale * g_snes_width;
   int window_height = custom_size ? g_config.window_height : g_current_window_scale * g_snes_height;
 
+#ifdef __PSP__
+  PspRenderer_Create(&g_renderer_funcs);
+#else
   if (g_config.output_method == kOutputMethod_OpenGL ||
       g_config.output_method == kOutputMethod_OpenGL_ES) {
     g_win_flags |= SDL_WINDOW_OPENGL;
@@ -389,6 +424,7 @@ int main(int argc, char** argv) {
   } else {
     g_renderer_funcs = kSdlRendererFuncs;
   }
+#endif
 
   SDL_Window* window = SDL_CreateWindow(kWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, window_width, window_height, g_win_flags);
   if(window == NULL) {
@@ -401,7 +437,11 @@ int main(int argc, char** argv) {
   if (!g_renderer_funcs.Initialize(window))
     return 1;
 
+#ifndef __PSP__
+  if (g_config.output_method == kOutputMethod_OpenGL ||
+      g_config.output_method == kOutputMethod_OpenGL_ES)
     SDL_GL_SetSwapInterval(0); // prevent GL swap from doing its own blocking; we pace on vblank
+#endif
 
 
   SDL_AudioDeviceID device = 0;

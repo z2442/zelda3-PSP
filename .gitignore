@@ -1,6 +1,7 @@
 /.vs/
 /packages/
 /.vscode/
+/.venv/
 .DS_Store
 *.dSYM
 /*.vcxproj.user
