@@ -48,7 +48,7 @@ static int g_width, g_height, g_texture_width, g_texture_height, g_texture_strid
 static uint32 g_hash4[2048], g_hash2[4096];
 static uint16 g_seen4[2048], g_seen2[4096], g_frame_stamp;
 static uint32 g_clut[256] __attribute__((aligned(64)));
-static uint32 g_clut2[8] __attribute__((aligned(64)));
+static uint32 g_clut2[8][8] __attribute__((aligned(64)));
 
 typedef struct PspTileVertex {
   float u, v;
@@ -358,12 +358,8 @@ static uint16 GetBgTile(Ppu *ppu, int layer, int tx, int ty) {
 static void SetBgTexture(Ppu *ppu, int layer, int palette) {
   bool is2 = layer == 2;
   if (is2) {
-    for (int i = 0; i < 8; i++)
-      g_clut2[i] = g_clut[palette * 4 + (i & 3)];
-    g_clut2[0] &= 0x00ffffff;
-    sceKernelDcacheWritebackRange(g_clut2, sizeof(g_clut2));
     sceGuClutMode(GU_PSM_8888, 0, 0x0f, 0);
-    sceGuClutLoad(1, g_clut2);
+    sceGuClutLoad(1, g_clut2[palette]);
     sceGuTexMode(GU_PSM_T4, 0, 0, GU_FALSE);
     sceGuTexImage(0, 512, 512, 512, g_atlas2);
   } else {
@@ -767,7 +763,13 @@ void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height,
 
   for (int i = 0; i < 256; i++)
     g_clut[i] = PspColor(ppu, ppu->cgram[i], (i & 15) == 0);
+  for (int palette = 0; palette < 8; palette++) {
+    for (int i = 0; i < 8; i++)
+      g_clut2[palette][i] = g_clut[palette * 4 + (i & 3)];
+    g_clut2[palette][0] &= 0x00ffffff;
+  }
   sceKernelDcacheWritebackRange(g_clut, sizeof(g_clut));
+  sceKernelDcacheWritebackRange(g_clut2, sizeof(g_clut2));
 
   sceGuStart(GU_DIRECT, g_gu_list);
   sceGuScissor(0, 0, kPspScreenWidth, kPspScreenHeight);

@@ -159,8 +159,10 @@ void ZeldaConfigurePpuSideSpace(void) {
     // Keep the widened room active while HDMA lighting is enabled. The PSP
     // renderer extends the lighting mask over these side areas on the GE.
     int qm = quadrant_fullsize_x >> 1;
-    extra_left = IntMax(BG2HOFS_copy2 - room_bounds_x.v[qm], 0);
-    extra_right = IntMax(room_bounds_x.v[qm + 2] - BG2HOFS_copy2, 0);
+    if (dungeon_room_index < 0x100) {
+      extra_left = IntMax(BG2HOFS_copy2 - room_bounds_x.v[qm], 0);
+      extra_right = IntMax(room_bounds_x.v[qm + 2] - BG2HOFS_copy2, 0);
+    }
 
     int qy = quadrant_fullsize_y >> 1;
     extra_bottom = IntMax(room_bounds_y.v[qy + 2] - BG2VOFS_copy2, 0);
