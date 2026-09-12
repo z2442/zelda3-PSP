@@ -75,6 +75,8 @@ static bool g_dynamic_window;
 
 extern void Die(const char *error);
 static uint32 PspColor(Ppu *ppu, uint16 color, bool transparent);
+static void EmitColorRect(PspColorVertex **v, int x0, int y0, int x1, int y1,
+                          uint32 color);
 
 static int NextPowerOfTwo(int value) {
   int result = 1;
@@ -206,8 +208,9 @@ static int ClampToScreen(int value, int limit) {
 static void SetActiveScissor(Ppu *ppu) {
   // The software renderer leaves the unused portion of the configured wide
   // canvas black when a room or overworld area cannot expose that much space.
-  int left = -ppu->extraLeftCur;
-  int right = 256 + ppu->extraRightCur;
+  bool strict_room = player_is_indoors && dungeon_room_index >= 0x100;
+  int left = strict_room ? 0 : -ppu->extraLeftCur;
+  int right = strict_room ? 256 : 256 + ppu->extraRightCur;
   int bottom = g_logical_height;
   if (bottom > 224)
     bottom = IntMin(bottom, 224 + ppu->extraBottomCur);
@@ -215,6 +218,32 @@ static void SetActiveScissor(Ppu *ppu) {
                ClampToScreen(MapY(0), kPspScreenHeight),
                ClampToScreen(MapX(right), kPspScreenWidth),
                ClampToScreen(MapY(bottom), kPspScreenHeight));
+}
+
+static bool IsStrictRoom(void) {
+  return player_is_indoors && dungeon_room_index >= 0x100;
+}
+
+static void MaskStrictRoomSides(void) {
+  if (!IsStrictRoom())
+    return;
+  int room_left = ClampToScreen(MapX(0), kPspScreenWidth);
+  int room_right = ClampToScreen(MapX(256), kPspScreenWidth);
+  PspColorVertex *verts = sceGuGetMemory(4 * sizeof(*verts));
+  PspColorVertex *v = verts;
+  if (g_out_x0 < room_left)
+    EmitColorRect(&v, g_out_x0, g_out_y0, room_left, g_out_y1, 0xff000000);
+  if (room_right < g_out_x1)
+    EmitColorRect(&v, room_right, g_out_y0, g_out_x1, g_out_y1, 0xff000000);
+  if (v != verts) {
+    sceGuScissor(0, 0, kPspScreenWidth, kPspScreenHeight);
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_BLEND);
+    sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                   v - verts, NULL, verts);
+  }
 }
 
 static int BgDepth(int layer, bool high) {
@@ -843,6 +872,7 @@ void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height,
       DrawSprites(ppu, 3, false, false);
     }
   }
+  MaskStrictRoomSides();
   if (show_fps)
     DrawFpsCounter(fps);
   sceGuFinish();

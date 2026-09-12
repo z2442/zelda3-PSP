@@ -170,6 +170,15 @@ void ZeldaConfigurePpuSideSpace(void) {
     extra_left = kPpuExtraLeftRight, extra_right = kPpuExtraLeftRight;
     extra_bottom = 16;
   }
+
+  // Houses and the other high-numbered indoor maps share a larger backing
+  // tilemap containing several unrelated rooms. They must remain a single
+  // 256-pixel view even while an entrance/transition module is active, or
+  // the native widescreen path exposes the neighboring rooms at the sides.
+  if (player_is_indoors && dungeon_room_index >= 0x100) {
+    extra_left = 0;
+    extra_right = 0;
+  }
   PpuSetExtraSideSpace(g_zenv.ppu, extra_left, extra_right, extra_bottom);
 }
 
