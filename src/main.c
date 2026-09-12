@@ -85,6 +85,9 @@ static void OpenOneGamepad(int i);
 static void HandleVolumeAdjustment(int volume_adjustment);
 static void LoadAssets();
 static void SwitchDirectory();
+#ifdef __PSP__
+void PspRenderer_DrawPpuFrame(struct Ppu *ppu, int width, int height);
+#endif
 
 enum {
   kDefaultFullscreen = 0,
@@ -188,6 +191,19 @@ static SDL_HitTestResult HitTestCallback(SDL_Window *win, const SDL_Point *pt, v
 }
 
 static void DrawPpuFrameWithPerf() {
+#ifdef __PSP__
+  uint64 before = SDL_GetPerformanceCounter();
+  PspRenderer_DrawPpuFrame(g_zenv.ppu, g_snes_width, g_snes_height);
+  ZeldaDrawPpuFrame(NULL, 0, g_ppu_render_flags | kPpuRenderFlags_Hardware);
+  uint64 after = SDL_GetPerformanceCounter();
+  static float history[64], average;
+  static int history_pos;
+  float v = (double)SDL_GetPerformanceFrequency() / (after - before);
+  average += v - history[history_pos];
+  history[history_pos] = v;
+  history_pos = (history_pos + 1) & 63;
+  g_curr_fps = average * (1.0f / 64);
+#else
   int render_scale = PpuGetCurrentRenderScale(g_zenv.ppu, g_ppu_render_flags);
   uint8 *pixel_buffer = 0;
   int pitch = 0;
@@ -212,6 +228,7 @@ static void DrawPpuFrameWithPerf() {
   if (g_display_perf)
     RenderNumber(pixel_buffer + pitch * render_scale, pitch, g_curr_fps, render_scale == 4);
   g_renderer_funcs.EndDraw();
+#endif
 }
 
 static SDL_mutex *g_audio_mutex;

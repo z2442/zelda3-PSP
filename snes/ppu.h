@@ -42,6 +42,7 @@ enum {
   kPpuRenderFlags_Height240 = 4,
   // Disable sprite render limits
   kPpuRenderFlags_NoSpriteLimits = 8,
+  kPpuRenderFlags_Hardware = 16,
 };
 
 
