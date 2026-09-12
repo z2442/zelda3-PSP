@@ -46,6 +46,7 @@ static uint8 *g_pixels;
 static uint8 *g_atlas4, *g_atlas2;
 static int g_width, g_height, g_texture_width, g_texture_height, g_texture_stride;
 static uint32 g_hash4[2048], g_hash2[4096];
+static uint16 g_seen4[2048], g_seen2[4096], g_frame_stamp;
 static uint32 g_clut[256] __attribute__((aligned(64)));
 static uint32 g_clut2[8] __attribute__((aligned(64)));
 
@@ -59,8 +60,17 @@ typedef struct PspColorVertex {
   int16 x, y, z;
 } PspColorVertex;
 
+typedef struct PspGeometry {
+  PspTileVertex *verts;
+  int count;
+} PspGeometry;
+
+static PspGeometry g_main_bg[3][2][8];
+static PspGeometry g_main_obj[4][8];
+
 static int g_out_x0, g_out_y0, g_out_x1, g_out_y1;
 static int g_logical_width, g_logical_height, g_logical_left;
+static int g_map_x_scale, g_map_y_scale;
 static bool g_dynamic_window;
 
 extern void Die(const char *error);
@@ -130,6 +140,9 @@ static uint32 HashWords(const uint16 *src, int count) {
 
 static void Ensure4bppTile(Ppu *ppu, int physical_tile) {
   physical_tile &= 2047;
+  if (g_seen4[physical_tile] == g_frame_stamp)
+    return;
+  g_seen4[physical_tile] = g_frame_stamp;
   const uint16 *src = &ppu->vram[physical_tile * 16];
   uint32 hash = HashWords(src, 16);
   if (g_hash4[physical_tile] == hash)
@@ -154,6 +167,9 @@ static void Ensure4bppTile(Ppu *ppu, int physical_tile) {
 
 static void Ensure2bppTile(Ppu *ppu, int physical_tile) {
   physical_tile &= 4095;
+  if (g_seen2[physical_tile] == g_frame_stamp)
+    return;
+  g_seen2[physical_tile] = g_frame_stamp;
   const uint16 *src = &ppu->vram[physical_tile * 8];
   uint32 hash = HashWords(src, 8);
   if (g_hash2[physical_tile] == hash)
@@ -176,11 +192,11 @@ static void Ensure2bppTile(Ppu *ppu, int physical_tile) {
 }
 
 static int MapX(int x) {
-  return g_out_x0 + (x - g_logical_left) * (g_out_x1 - g_out_x0) / g_logical_width;
+  return g_out_x0 + ((x - g_logical_left) * g_map_x_scale >> 20);
 }
 
 static int MapY(int y) {
-  return g_out_y0 + y * (g_out_y1 - g_out_y0) / g_logical_height;
+  return g_out_y0 + (y * g_map_y_scale >> 20);
 }
 
 static int ClampToScreen(int value, int limit) {
@@ -339,31 +355,7 @@ static uint16 GetBgTile(Ppu *ppu, int layer, int tx, int ty) {
   return ppu->vram[addr & 0x7fff];
 }
 
-static int CountBgTiles(Ppu *ppu, int layer, bool high, int palette) {
-  BgLayer *bg = &ppu->bgLayer[layer];
-  int left = layer == 2 ? 0 : g_logical_left;
-  int right = layer == 2 ? 256 : g_logical_left + g_logical_width;
-  int tx0 = (bg->hScroll + left) >> 3;
-  int tx1 = (bg->hScroll + right + 7) >> 3;
-  int ty0 = bg->vScroll >> 3;
-  int ty1 = (bg->vScroll + g_logical_height + 7) >> 3;
-  int count = 0;
-  for (int ty = ty0; ty <= ty1; ty++)
-    for (int tx = tx0; tx <= tx1; tx++) {
-      uint16 tile = GetBgTile(ppu, layer, tx, ty);
-      if (!!(tile & 0x2000) == high && ((tile >> 10) & 7) == palette)
-        count++;
-    }
-  return count;
-}
-
-static void DrawBgPass(Ppu *ppu, int layer, bool high, int palette, bool sub, bool math_clip) {
-  if (!(ppu->screenEnabled[sub] & (1 << layer)))
-    return;
-  int count = CountBgTiles(ppu, layer, high, palette);
-  if (!count)
-    return;
-
+static void SetBgTexture(Ppu *ppu, int layer, int palette) {
   bool is2 = layer == 2;
   if (is2) {
     for (int i = 0; i < 8; i++)
@@ -380,10 +372,30 @@ static void DrawBgPass(Ppu *ppu, int layer, bool high, int palette, bool sub, bo
     sceGuTexMode(GU_PSM_T4, 0, 0, GU_FALSE);
     sceGuTexImage(0, 256, 512, 256, g_atlas4);
   }
+}
 
-  PspTileVertex *verts = sceGuGetMemory(count * 2 * sizeof(*verts));
-  PspTileVertex *v = verts;
+static void DrawBgPriority(Ppu *ppu, int layer, bool high, bool sub, bool math_clip) {
+  if (!(ppu->screenEnabled[sub] & (1 << layer)))
+    return;
+
+  // A BG's tile geometry does not change between main and subscreen. Most
+  // transparency scenes enable it on both, so reuse the vertices already
+  // emitted for the main screen and only change the GE window/blend state.
+  if (sub && (ppu->screenEnabled[0] & (1 << layer))) {
+    for (int palette = 0; palette < 8; palette++) {
+      PspGeometry *geom = &g_main_bg[layer][high][palette];
+      if (geom->count) {
+        SetBgTexture(ppu, layer, palette);
+        DrawLayerGeometry(ppu, layer, true, math_clip, geom->count, geom->verts);
+      }
+    }
+    return;
+  }
+
+  int counts[8] = {0};
+  PspTileVertex *verts[8] = {0}, *write[8];
   BgLayer *bg = &ppu->bgLayer[layer];
+  bool is2 = layer == 2;
   int left = layer == 2 ? 0 : g_logical_left;
   int right = layer == 2 ? 256 : g_logical_left + g_logical_width;
   int tx0 = (bg->hScroll + left) >> 3;
@@ -393,8 +405,21 @@ static void DrawBgPass(Ppu *ppu, int layer, bool high, int palette, bool sub, bo
   for (int ty = ty0; ty <= ty1; ty++) {
     for (int tx = tx0; tx <= tx1; tx++) {
       uint16 tile = GetBgTile(ppu, layer, tx, ty);
-      if (!!(tile & 0x2000) != high || ((tile >> 10) & 7) != palette)
+      if (!!(tile & 0x2000) == high)
+        counts[(tile >> 10) & 7]++;
+    }
+  }
+  for (int palette = 0; palette < 8; palette++) {
+    if (counts[palette])
+      verts[palette] = write[palette] = sceGuGetMemory(counts[palette] * 2 * sizeof(**verts));
+  }
+
+  for (int ty = ty0; ty <= ty1; ty++) {
+    for (int tx = tx0; tx <= tx1; tx++) {
+      uint16 tile = GetBgTile(ppu, layer, tx, ty);
+      if (!!(tile & 0x2000) != high)
         continue;
+      int palette = (tile >> 10) & 7;
       int tile_num = tile & 0x3ff;
       int physical = ((bg->tileAdr + tile_num * (is2 ? 8 : 16)) & 0x7fff) / (is2 ? 8 : 16);
       if (is2) Ensure2bppTile(ppu, physical); else Ensure4bppTile(ppu, physical);
@@ -407,17 +432,19 @@ static void DrawBgPass(Ppu *ppu, int layer, bool high, int palette, bool sub, bo
       int sx = tx * 8 - bg->hScroll;
       int sy = ty * 8 - bg->vScroll;
       int z = BgDepth(layer, high);
-      v[0] = (PspTileVertex){u0, v0, MapX(sx), MapY(sy), z};
-      v[1] = (PspTileVertex){u1, v1, MapX(sx + 8), MapY(sy + 8), z};
-      v += 2;
+      write[palette][0] = (PspTileVertex){u0, v0, MapX(sx), MapY(sy), z};
+      write[palette][1] = (PspTileVertex){u1, v1, MapX(sx + 8), MapY(sy + 8), z};
+      write[palette] += 2;
     }
   }
-  DrawLayerGeometry(ppu, layer, sub, math_clip, count * 2, verts);
-}
-
-static void DrawBgPriority(Ppu *ppu, int layer, bool high, bool sub, bool math_clip) {
-  for (int palette = 0; palette < 8; palette++)
-    DrawBgPass(ppu, layer, high, palette, sub, math_clip);
+  for (int palette = 0; palette < 8; palette++) {
+    if (!counts[palette])
+      continue;
+    if (!sub)
+      g_main_bg[layer][high][palette] = (PspGeometry){verts[palette], counts[palette] * 2};
+    SetBgTexture(ppu, layer, palette);
+    DrawLayerGeometry(ppu, layer, sub, math_clip, counts[palette] * 2, verts[palette]);
+  }
 }
 
 static int SpriteSize(Ppu *ppu, int big) {
@@ -427,35 +454,51 @@ static int SpriteSize(Ppu *ppu, int big) {
   return sizes[ppu->objSize & 7][big & 1];
 }
 
-static int CountSpriteTiles(Ppu *ppu, int priority, int palette) {
-  int count = 0;
-  for (int index = 0; index < 256; index += 2) {
-    int y = ppu->oam[index] >> 8;
-    if (y == 0xf0) continue;
-    int hi = ppu->oam[0x100 + (index >> 4)] >> (index & 15);
-    int attr = ppu->oam[index + 1];
-    if (((attr >> 12) & 3) != priority || ((attr >> 9) & 7) != palette) continue;
-    int size = SpriteSize(ppu, hi >> 1);
-    count += (size / 8) * (size / 8);
-  }
-  return count;
-}
-
-static void DrawSpritePass(Ppu *ppu, int priority, int palette, bool sub, bool math_clip) {
-  if (!(ppu->screenEnabled[sub] & 0x10)) return;
-  int count = CountSpriteTiles(ppu, priority, palette);
-  if (!count) return;
+static void SetSpriteTexture(int palette) {
   sceGuClutMode(GU_PSM_8888, 0, 0x0f, 8 + palette);
   sceGuClutLoad(32, g_clut);
   sceGuTexMode(GU_PSM_T4, 0, 0, GU_FALSE);
   sceGuTexImage(0, 256, 512, 256, g_atlas4);
-  PspTileVertex *verts = sceGuGetMemory(count * 2 * sizeof(*verts)), *v = verts;
+}
+
+static void DrawSprites(Ppu *ppu, int priority, bool sub, bool math_clip) {
+  if (!(ppu->screenEnabled[sub] & 0x10))
+    return;
+  if (sub && (ppu->screenEnabled[0] & 0x10)) {
+    for (int palette = 0; palette < 8; palette++) {
+      PspGeometry *geom = &g_main_obj[priority][palette];
+      if (geom->count) {
+        SetSpriteTexture(palette);
+        DrawLayerGeometry(ppu, 4, true, math_clip, geom->count, geom->verts);
+      }
+    }
+    return;
+  }
+  int counts[8] = {0};
+  PspTileVertex *verts[8] = {0}, *write[8];
+  for (int index = 0; index < 256; index += 2) {
+    int y = ppu->oam[index] >> 8;
+    if (y == 0xf0)
+      continue;
+    int hi = ppu->oam[0x100 + (index >> 4)] >> (index & 15);
+    int attr = ppu->oam[index + 1];
+    if (((attr >> 12) & 3) != priority)
+      continue;
+    int size = SpriteSize(ppu, hi >> 1) / 8;
+    counts[(attr >> 9) & 7] += size * size;
+  }
+  for (int palette = 0; palette < 8; palette++) {
+    if (counts[palette])
+      verts[palette] = write[palette] = sceGuGetMemory(counts[palette] * 2 * sizeof(**verts));
+  }
+
   for (int index = 254; index >= 0; index -= 2) {
     int sy0 = ppu->oam[index] >> 8;
     if (sy0 == 0xf0) continue;
     int hi = ppu->oam[0x100 + (index >> 4)] >> (index & 15);
     int attr = ppu->oam[index + 1];
-    if (((attr >> 12) & 3) != priority || ((attr >> 9) & 7) != palette) continue;
+    if (((attr >> 12) & 3) != priority) continue;
+    int palette = (attr >> 9) & 7;
     int size = SpriteSize(ppu, hi >> 1);
     int sx0 = (ppu->oam[index] & 0xff) + (hi & 1) * 256;
     // OAM's ninth X bit wraps beyond the complete widened SNES canvas, not
@@ -475,17 +518,19 @@ static void DrawSpritePass(Ppu *ppu, int priority, int palette, bool sub, bool m
       if (attr & 0x4000) { float t=u0;u0=u1;u1=t; }
       if (attr & 0x8000) { float t=v0;v0=v1;v1=t; }
       int z = (priority * 4 + 2) * 256 + 128 - (index >> 1);
-      v[0] = (PspTileVertex){u0,v0,MapX(sx0+col),MapY(sy0+row),z};
-      v[1] = (PspTileVertex){u1,v1,MapX(sx0+col+8),MapY(sy0+row+8),z};
-      v += 2;
+      write[palette][0] = (PspTileVertex){u0,v0,MapX(sx0+col),MapY(sy0+row),z};
+      write[palette][1] = (PspTileVertex){u1,v1,MapX(sx0+col+8),MapY(sy0+row+8),z};
+      write[palette] += 2;
     }
   }
-  DrawLayerGeometry(ppu, 4, sub, math_clip, count * 2, verts);
-}
-
-static void DrawSprites(Ppu *ppu, int priority, bool sub, bool math_clip) {
-  for (int palette = 0; palette < 8; palette++)
-    DrawSpritePass(ppu, priority, palette, sub, math_clip);
+  for (int palette = 0; palette < 8; palette++) {
+    if (!counts[palette])
+      continue;
+    if (!sub)
+      g_main_obj[priority][palette] = (PspGeometry){verts[palette], counts[palette] * 2};
+    SetSpriteTexture(palette);
+    DrawLayerGeometry(ppu, 4, sub, math_clip, counts[palette] * 2, verts[palette]);
+  }
 }
 
 static void RestoreBackdrop(Ppu *ppu) {
@@ -515,19 +560,29 @@ static void RestoreLayersExcludedFromMath(Ppu *ppu) {
     RestoreBackdrop(ppu);
   for (int layer = 0; layer < 3; layer++) {
     if (!(ppu->mathEnabled & (1 << layer))) {
-      DrawBgPriority(ppu, layer, false, false, false);
-      DrawBgPriority(ppu, layer, true, false, false);
+      for (int high = 0; high < 2; high++) {
+        for (int palette = 0; palette < 8; palette++) {
+          PspGeometry *geom = &g_main_bg[layer][high][palette];
+          if (geom->count) {
+            SetBgTexture(ppu, layer, palette);
+            DrawLayerGeometry(ppu, layer, false, false, geom->count, geom->verts);
+          }
+        }
+      }
     }
   }
 
   // OBJ palettes 0-3 are tagged as layer 6 by the software PPU and never use
   // color math. Palettes 4-7 follow the normal OBJ enable bit (layer 4).
   for (int priority = 0; priority < 4; priority++) {
-    for (int palette = 0; palette < 4; palette++)
-      DrawSpritePass(ppu, priority, palette, false, false);
-    if (!(ppu->mathEnabled & 0x10)) {
-      for (int palette = 4; palette < 8; palette++)
-        DrawSpritePass(ppu, priority, palette, false, false);
+    for (int palette = 0; palette < 8; palette++) {
+      if (palette < 4 || !(ppu->mathEnabled & 0x10)) {
+        PspGeometry *geom = &g_main_obj[priority][palette];
+        if (geom->count) {
+          SetSpriteTexture(palette);
+          DrawLayerGeometry(ppu, 4, false, false, geom->count, geom->verts);
+        }
+      }
     }
   }
 
@@ -678,6 +733,13 @@ static void DrawFpsCounter(int fps) {
 
 void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height,
                               bool show_fps, int fps) {
+  if (++g_frame_stamp == 0) {
+    memset(g_seen4, 0, sizeof(g_seen4));
+    memset(g_seen2, 0, sizeof(g_seen2));
+    g_frame_stamp = 1;
+  }
+  memset(g_main_bg, 0, sizeof(g_main_bg));
+  memset(g_main_obj, 0, sizeof(g_main_obj));
   g_logical_width = width;
   g_logical_height = height;
   g_logical_left = -(width - 256) / 2;
@@ -697,6 +759,11 @@ void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height,
       g_out_x1 = g_out_x0 + output_width;
     }
   }
+  // Allegrex integer division is slow. Convert logical coordinates with a
+  // multiply/shift for every tile vertex instead of dividing thousands of
+  // times in multilayer rooms.
+  g_map_x_scale = ((g_out_x1 - g_out_x0) << 20) / g_logical_width;
+  g_map_y_scale = ((g_out_y1 - g_out_y0) << 20) / g_logical_height;
 
   for (int i = 0; i < 256; i++)
     g_clut[i] = PspColor(ppu, ppu->cgram[i], (i & 15) == 0);
