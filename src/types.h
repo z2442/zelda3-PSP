@@ -25,8 +25,6 @@ typedef unsigned int uint;
 #define arraysize(x) sizeof(x)/sizeof(x[0])
 #define sign8(x) ((x) & 0x80)
 #define sign16(x) ((x) & 0x8000)
-#define load24(x) ((*(uint32*)&(x))&0xffffff)
-
 #ifdef _MSC_VER
 #define countof _countof
 #define NORETURN __declspec(noreturn)
@@ -59,8 +57,19 @@ static FORCEINLINE uint UintMax(uint a, uint b) { return a > b ? a : b; }
 
 #define BYTE(x) (*(uint8*)&(x))
 #define HIBYTE(x) (((uint8*)&(x))[1])
-#define WORD(x) (*(uint16*)&(x))
-#define DWORD(x) (*(uint32*)&(x))
+#ifdef __PSP__
+// The original code frequently overlays words on byte-addressed SNES memory.
+// GCC may otherwise emit aligned `lh`/`sh` and `lw`/`sw` instructions, which
+// trap on the PSP's MIPS CPU when the byte offset is odd.
+typedef uint16 unaligned_uint16 __attribute__((aligned(1), may_alias));
+typedef uint32 unaligned_uint32 __attribute__((aligned(1), may_alias));
+#else
+typedef uint16 unaligned_uint16;
+typedef uint32 unaligned_uint32;
+#endif
+#define WORD(x) (*(unaligned_uint16*)&(x))
+#define DWORD(x) (*(unaligned_uint32*)&(x))
+#define load24(x) (DWORD(x) & 0xffffff)
 #define XY(x, y) ((y)*64+(x))
 
 #ifndef swap16

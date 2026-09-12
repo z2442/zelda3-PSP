@@ -260,7 +260,7 @@ void SaveGameFile() {  // 80894a
   memcpy(g_zenv.sram + offs + 0xf00, save_dung_info, 0x500);
   uint16 t = 0x5a5a;
   for (int i = 0; i < 0x4fe; i += 2)
-    t -= *(uint16 *)((char *)save_dung_info + i);
+    t -= WORD(((uint8 *)save_dung_info)[i]);
   word_7EF4FE = t;
   WORD(g_zenv.sram[offs + 0x4fe]) = t;
   WORD(g_zenv.sram[offs + 0x4fe + 0xf00]) = t;

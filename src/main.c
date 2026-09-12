@@ -990,13 +990,13 @@ static void LoadAssets() {
 
   if (length < 16 + 32 + 32 + 8 + kNumberOfAssets * 4 ||
       memcmp(data, kAssetsSig, 48) != 0 ||
-      *(uint32*)(data + 80) != kNumberOfAssets)
+      DWORD(data[80]) != kNumberOfAssets)
     Die("Invalid assets file");
 
-  uint32 offset = 88 + kNumberOfAssets * 4 + *(uint32 *)(data + 84);
+  uint32 offset = 88 + kNumberOfAssets * 4 + DWORD(data[84]);
 
   for (size_t i = 0; i < kNumberOfAssets; i++) {
-    uint32 size = *(uint32 *)(data + 88 + i * 4);
+    uint32 size = DWORD(data[88 + i * 4]);
     offset = (offset + 3) & ~3;
     if ((uint64)offset + size > length)
       Die("Assets file corruption");

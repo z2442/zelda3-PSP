@@ -181,14 +181,14 @@ MemBlk FindIndexInMemblk(MemBlk data, size_t i) {
   if (mx < 8192) {
     if (i > mx || mx * 2 > end)
       return (MemBlk) { 0, 0 };
-    left_off = ((i == 0) ? mx * 2 : mx * 2 + *(uint16 *)(data.ptr + i * 2 - 2));
-    right_off = (i == mx) ? end : mx * 2 + *(uint16 *)(data.ptr + i * 2);
+    left_off = ((i == 0) ? mx * 2 : mx * 2 + WORD(data.ptr[i * 2 - 2]));
+    right_off = (i == mx) ? end : mx * 2 + WORD(data.ptr[i * 2]);
   } else {
     mx -= 8192;
     if (i > mx || mx * 4 > end)
       return (MemBlk) { 0, 0 };
-    left_off = ((i == 0) ? mx * 4 : mx * 4 + *(uint32 *)(data.ptr + i * 4 - 4));
-    right_off = (i == mx) ? end : mx * 4 + *(uint32 *)(data.ptr + i * 4);
+    left_off = ((i == 0) ? mx * 4 : mx * 4 + DWORD(data.ptr[i * 4 - 4]));
+    right_off = (i == mx) ? end : mx * 4 + DWORD(data.ptr[i * 4]);
   }
   if (left_off > right_off || right_off > end)
     return (MemBlk) { 0, 0 };
@@ -227,9 +227,9 @@ uint8 *ApplyBps(const uint8 *src, size_t src_size_in,
 
   if (memcmp(bps, "BPS1", 4))
     return NULL;
-  if (crc32(src, src_size_in) != *(uint32 *)(bps_end))
+  if (crc32(src, src_size_in) != DWORD(bps_end[0]))
     return NULL;
-  if (crc32(bps, bps_size - 4) != *(uint32 *)(bps_end + 8))
+  if (crc32(bps, bps_size - 4) != DWORD(bps_end[8]))
     return NULL;
 
   bps += 4;
@@ -275,7 +275,7 @@ uint8 *ApplyBps(const uint8 *src, size_t src_size_in,
   }
   if (dst_size != outputOffset)
     return NULL;
-  if (crc32(dst, dst_size) != *(uint32 *)(bps_end + 4))
+  if (crc32(dst, dst_size) != DWORD(bps_end[4]))
     return NULL;
   return dst;
 }

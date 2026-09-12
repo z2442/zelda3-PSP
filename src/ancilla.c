@@ -81,8 +81,8 @@ static const uint8 kMagicPowder_Tab0[40] = {
 #define ether_x2 (*(uint16*)(g_ram+0x1580E))
 #define ether_y3 (*(uint16*)(g_ram+0x15810))
 #define ether_var1 (*(uint8*)(g_ram+0x15812))
-#define ether_y (*(uint16*)(g_ram+0x15813))
-#define ether_x (*(uint16*)(g_ram+0x15815))
+#define ether_y (*(unaligned_uint16*)(g_ram+0x15813))
+#define ether_x (*(unaligned_uint16*)(g_ram+0x15815))
 static const uint8 kEther_BlitzOrb_Char[8] = {0x48, 0x48, 0x4a, 0x4a, 0x4c, 0x4c, 0x4e, 0x4e};
 static const uint8 kEther_BlitzOrb_Flags[8] = {0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c};
 static const uint8 kEther_BlitzSegment_Char[4] = {0x40, 0x42, 0x44, 0x46};

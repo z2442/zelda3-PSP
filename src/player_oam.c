@@ -1117,15 +1117,15 @@ continue_after_set:
       }
     } else {
       uint8 *p = &bytewise_extended_oam[sort_sprites_offset_into_oam_buffer >> 2];
-      WORD(p[0]) = 0x101;
-      WORD(p[2]) = 0x101;
-      WORD(p[4]) = 0x101;
-      WORD(p[6]) = 0x101;
-      WORD(p[8]) = 0x101;
-      WORD(p[10]) = 0x101;
+      // This byte array is not guaranteed to begin on a halfword boundary on
+      // PSP. Store the packed extended-OAM values without MIPS `sh`.
+      for (int i = 0; i < 12; i++)
+        p[i] = 1;
       // Clear the bit again for the shadow oam so it's not hidden?
-      if (shadow_oam_pos >= 0)
-        WORD(p[shadow_oam_pos]) = 0;
+      if (shadow_oam_pos >= 0) {
+        p[shadow_oam_pos + 0] = 0;
+        p[shadow_oam_pos + 1] = 0;
+      }
     }
   }
 
@@ -1282,7 +1282,8 @@ void LinkOam_DrawFootObject(int r4loc, uint8 oam_x, uint8 oam_y) {  // 8daed1
   oam[0].y = oam_y;
   oam[1].y = oam_y;
 
-  WORD(bytewise_extended_oam[oam_pos]) = 0;
+  bytewise_extended_oam[oam_pos + 0] = 0;
+  bytewise_extended_oam[oam_pos + 1] = 0;
 }
 
 void LinkOam_CalculateXOffsetRelativeLink(uint8 x) {  // 8dafc0

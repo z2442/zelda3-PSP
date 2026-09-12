@@ -5345,11 +5345,11 @@ void Dungeon_LoadSingleDoorTileAttribute() {  // 81d51f
   for (int i = 0; i != dung_num_toggle_floor; i += 2) {
     int j = dung_toggle_floor_pos[i >> 1];
     if ((dung_bg2_attr_table[j] & 0xf0) == 0x80) {
-      uint16 attr = *(uint16 *)&dung_bg2_attr_table[j];
+      uint16 attr = WORD(dung_bg2_attr_table[j]);
       WriteAttr2(j + XY(0, 0), attr | 0x1010);
       WriteAttr2(j + XY(0, 1), attr | 0x1010);
     } else {
-      uint16 attr = *(uint16 *)&dung_bg1_attr_table[j];
+      uint16 attr = WORD(dung_bg1_attr_table[j]);
       WriteAttr1(j + XY(0, 0), attr | 0x1010);
       WriteAttr1(j + XY(0, 1), attr | 0x1010);
     }
@@ -5357,11 +5357,11 @@ void Dungeon_LoadSingleDoorTileAttribute() {  // 81d51f
   for (int i = 0; i != dung_num_toggle_palace; i += 2) {
     int j = dung_toggle_palace_pos[i >> 1];
     if ((dung_bg2_attr_table[j] & 0xf0) == 0x80) {
-      uint16 attr = *(uint16 *)&dung_bg2_attr_table[j];
+      uint16 attr = WORD(dung_bg2_attr_table[j]);
       WriteAttr2(j + XY(0, 0), attr | 0x2020);
       WriteAttr2(j + XY(0, 1), attr | 0x2020);
     } else {
-      uint16 attr = *(uint16 *)&dung_bg1_attr_table[j];
+      uint16 attr = WORD(dung_bg1_attr_table[j]);
       WriteAttr1(j + XY(0, 0), attr | 0x2020);
       WriteAttr1(j + XY(0, 1), attr | 0x2020);
     }

@@ -272,8 +272,8 @@ static void RunEmulatedSnesFrame(Snes *snes, int run_what) {
     RunOrigAsmCodeOneLoop(snes);
     g_emulated_ram[0x12] = 1;
     // Fixup uninitialized variable
-    *(uint16*)(g_emulated_ram+0xAE0) = 0xb280;
-    *(uint16*)(g_emulated_ram+0xAE2) = 0xb280 + 0x60;
+    WORD(g_emulated_ram[0xAE0]) = 0xb280;
+    WORD(g_emulated_ram[0xAE2]) = 0xb280 + 0x60;
   }
 
   // Run poly code
@@ -299,7 +299,7 @@ static void RunEmulatedSnesFrame(Snes *snes, int run_what) {
 
   // animated_tile_vram_addr uninited
   if (snes->ram[0xadd] == 0)
-    *(uint16_t*)&snes->ram[0xadc] = 0xa680;
+    WORD(snes->ram[0xadc]) = 0xa680;
 
   // In one code path flag_update_hud_in_nmi uses an undefined value
   snes_write(snes, DMAP0, 0x01);
