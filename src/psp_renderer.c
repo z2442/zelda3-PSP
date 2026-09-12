@@ -285,8 +285,11 @@ static void DrawDynamicWindowDarkness(Ppu *ppu) {
   PspColorVertex *v = verts;
   uint16 fixed = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
   uint32 color = PspColor(ppu, fixed, false);
-  int canvas_left = -ppu->extraLeftCur;
-  int canvas_right = 256 + ppu->extraRightCur;
+  // HDMA supplies a 256-pixel light span, but darkness must cover the whole
+  // PSP widescreen canvas. Pixels in the extended room outside that span are
+  // therefore darkened instead of exposing a 4:3 effect rectangle.
+  int canvas_left = g_logical_left;
+  int canvas_right = g_logical_left + g_logical_width;
   for (int y = 0; y < lines; y++) {
     uint16 span = hdma_table_dynamic[y];
     int light_left = span & 0xff;
@@ -309,6 +312,7 @@ static void DrawDynamicWindowDarkness(Ppu *ppu) {
     }
   }
   if (v != verts) {
+    sceGuScissor(g_out_x0, g_out_y0, g_out_x1, g_out_y1);
     sceGuDisable(GU_TEXTURE_2D);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuEnable(GU_BLEND);
@@ -319,6 +323,7 @@ static void DrawDynamicWindowDarkness(Ppu *ppu) {
     sceGuDisable(GU_BLEND);
     sceGuEnable(GU_DEPTH_TEST);
     sceGuEnable(GU_TEXTURE_2D);
+    SetActiveScissor(ppu);
   }
 }
 

@@ -416,9 +416,9 @@ int main(int argc, char** argv) {
   g_config.output_method = kOutputMethod_SDL;
   // A 4x Mode 7 surface is wider than the PSP GE's 512-pixel texture limit.
   g_config.enhanced_mode7 = false;
-  // Match the real SNES scanline limits. Unlimited sprite slivers can make
-  // busy overworld scenes disproportionately expensive on the PSP CPU.
-  g_config.no_sprite_limits = false;
+  // The native renderer submits OAM directly to the GE, so retain every
+  // sprite instead of reproducing the SNES 32-sprite/34-tile scanline drop.
+  g_config.no_sprite_limits = true;
 #endif
   LoadAssets();
   LoadLinkGraphics();
