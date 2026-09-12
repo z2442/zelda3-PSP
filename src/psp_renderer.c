@@ -619,7 +619,65 @@ static uint32 PspColor(Ppu *ppu, uint16 color, bool transparent) {
   return (transparent ? 0 : 0xff000000) | b << 16 | g << 8 | r;
 }
 
-void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height) {
+static uint8 FpsGlyphRow(char c, int row) {
+  static const uint8 digits[10][5] = {
+    {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7},
+    {5, 5, 7, 1, 1}, {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 1, 1},
+    {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7},
+  };
+  if (c >= '0' && c <= '9')
+    return digits[c - '0'][row];
+  static const uint8 f[5] = {7, 4, 6, 4, 4};
+  static const uint8 p[5] = {6, 5, 6, 4, 4};
+  static const uint8 s[5] = {7, 4, 7, 1, 7};
+  return c == 'F' ? f[row] : c == 'P' ? p[row] : c == 'S' ? s[row] : 0;
+}
+
+static void EmitColorRect(PspColorVertex **v, int x0, int y0, int x1, int y1,
+                          uint32 color) {
+  (*v)[0] = (PspColorVertex){color, x0, y0, 0};
+  (*v)[1] = (PspColorVertex){color, x1, y1, 0};
+  *v += 2;
+}
+
+static void DrawFpsCounter(int fps) {
+  char text[8] = {'F', 'P', 'S', ' '};
+  int count = 4;
+  fps = fps < 0 ? 0 : fps > 999 ? 999 : fps;
+  if (fps >= 100)
+    text[count++] = '0' + fps / 100;
+  if (fps >= 10)
+    text[count++] = '0' + fps / 10 % 10;
+  text[count++] = '0' + fps % 10;
+
+  PspColorVertex *verts = sceGuGetMemory(512 * sizeof(*verts));
+  PspColorVertex *v = verts;
+  const int scale = 2, x0 = 5, y0 = 5, advance = 4 * scale;
+  EmitColorRect(&v, 2, 2, x0 + count * advance + 2, y0 + 5 * scale + 3,
+                0xff000000);
+  for (int i = 0; i < count; i++) {
+    for (int y = 0; y < 5; y++) {
+      uint8 bits = FpsGlyphRow(text[i], y);
+      for (int x = 0; x < 3; x++) {
+        if (bits & (4 >> x))
+          EmitColorRect(&v, x0 + i * advance + x * scale, y0 + y * scale,
+                        x0 + i * advance + (x + 1) * scale,
+                        y0 + (y + 1) * scale, 0xffffffff);
+      }
+    }
+  }
+
+  sceGuScissor(0, 0, kPspScreenWidth, kPspScreenHeight);
+  sceGuDisable(GU_TEXTURE_2D);
+  sceGuDisable(GU_ALPHA_TEST);
+  sceGuDisable(GU_DEPTH_TEST);
+  sceGuDisable(GU_BLEND);
+  sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 v - verts, NULL, verts);
+}
+
+void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height,
+                              bool show_fps, int fps) {
   g_logical_width = width;
   g_logical_height = height;
   g_logical_left = -(width - 256) / 2;
@@ -716,6 +774,8 @@ void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height) {
       DrawSprites(ppu, 3, false, false);
     }
   }
+  if (show_fps)
+    DrawFpsCounter(fps);
   sceGuFinish();
   sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
   // Native PPU rendering is synchronized to one game update per display

@@ -32,6 +32,7 @@
 
 #include <pspkernel.h>
 #include <psppower.h>
+#include <pspctrl.h>
 #include <pspsuspend.h>
 
 // --- PSP Module Info ---
@@ -86,7 +87,8 @@ static void HandleVolumeAdjustment(int volume_adjustment);
 static void LoadAssets();
 static void SwitchDirectory();
 #ifdef __PSP__
-void PspRenderer_DrawPpuFrame(struct Ppu *ppu, int width, int height);
+void PspRenderer_DrawPpuFrame(struct Ppu *ppu, int width, int height,
+                              bool show_fps, int fps);
 #endif
 
 enum {
@@ -196,7 +198,8 @@ static void DrawPpuFrameWithPerf() {
   // Update the active wide-area bounds before drawing, while retaining the
   // pre-HDMA register state used at the top of the frame.
   ZeldaConfigurePpuSideSpace();
-  PspRenderer_DrawPpuFrame(g_zenv.ppu, g_snes_width, g_snes_height);
+  PspRenderer_DrawPpuFrame(g_zenv.ppu, g_snes_width, g_snes_height,
+                           g_display_perf, g_curr_fps);
   ZeldaDrawPpuFrame(NULL, 0, g_ppu_render_flags | kPpuRenderFlags_Hardware);
   uint64 after = SDL_GetPerformanceCounter();
   static float history[64], average;
@@ -233,6 +236,20 @@ static void DrawPpuFrameWithPerf() {
   g_renderer_funcs.EndDraw();
 #endif
 }
+
+#ifdef __PSP__
+static void PollPspOverlayButton(void) {
+  static bool toggle_was_down;
+  SceCtrlData pad;
+  if (sceCtrlPeekBufferPositive(&pad, 1) <= 0)
+    return;
+  const uint32 toggle_buttons = PSP_CTRL_SELECT | PSP_CTRL_START;
+  bool toggle_down = (pad.Buttons & toggle_buttons) == toggle_buttons;
+  if (toggle_down && !toggle_was_down)
+    g_display_perf = !g_display_perf;
+  toggle_was_down = toggle_down;
+}
+#endif
 
 static SDL_mutex *g_audio_mutex;
 static uint8 *g_audiobuffer, *g_audiobuffer_cur, *g_audiobuffer_end;
@@ -591,6 +608,10 @@ int main(int argc, char** argv) {
         break;
       }
     }
+
+#ifdef __PSP__
+    PollPspOverlayButton();
+#endif
 
     if (g_paused != audiopaused) {
       audiopaused = g_paused;
