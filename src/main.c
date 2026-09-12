@@ -193,6 +193,9 @@ static SDL_HitTestResult HitTestCallback(SDL_Window *win, const SDL_Point *pt, v
 static void DrawPpuFrameWithPerf() {
 #ifdef __PSP__
   uint64 before = SDL_GetPerformanceCounter();
+  // Update the active wide-area bounds before drawing, while retaining the
+  // pre-HDMA register state used at the top of the frame.
+  ZeldaConfigurePpuSideSpace();
   PspRenderer_DrawPpuFrame(g_zenv.ppu, g_snes_width, g_snes_height);
   ZeldaDrawPpuFrame(NULL, 0, g_ppu_render_flags | kPpuRenderFlags_Hardware);
   uint64 after = SDL_GetPerformanceCounter();

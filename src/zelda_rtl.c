@@ -137,7 +137,7 @@ static void SimpleHdma_DoLine(SimpleHdma *c) {
   c->rep_count--;
 }
 
-static void ConfigurePpuSideSpace() {
+void ZeldaConfigurePpuSideSpace(void) {
   // Let PPU impl know about the maximum allowed extra space on the sides and bottom
   int extra_right = 0, extra_left = 0, extra_bottom = 0;
 //  printf("main %d, sub %d  (%d, %d, %d)\n", main_module_index, submodule_index, BG2HOFS_copy2, room_bounds_x.v[2 | (quadrant_fullsize_x >> 1)], quadrant_fullsize_x >> 1);
@@ -195,7 +195,7 @@ void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
   }
 
   if (g_zenv.ppu->extraLeftRight != 0 || render_flags & kPpuRenderFlags_Height240)
-    ConfigurePpuSideSpace();
+    ZeldaConfigurePpuSideSpace();
 
   int height = render_flags & kPpuRenderFlags_Height240 ? 240 : 224;
 
