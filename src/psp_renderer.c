@@ -388,11 +388,9 @@ static void PspRenderer_EndDraw(void) {
                  2, NULL, vertices);
   sceGuFinish();
   sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
-  // Waiting here unconditionally quantizes a slightly late frame from ~55 Hz
-  // all the way down to 30 Hz. Match DisableFrameDelay and allow immediate
-  // swaps when benchmarking or when the frame misses the current vblank.
-  if (!g_config.disable_frame_delay)
-    sceDisplayWaitVblankStart();
+  // Zelda advances once per presented frame. Always pace the PSP build on
+  // the panel's 60 Hz vblank so gameplay cannot run uncapped.
+  sceDisplayWaitVblankStart();
   sceGuSwapBuffers();
 }
 
@@ -480,8 +478,9 @@ void PspRenderer_DrawPpuFrame(Ppu *ppu, int width, int height) {
   }
   sceGuFinish();
   sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
-  if (!g_config.disable_frame_delay)
-    sceDisplayWaitVblankStart();
+  // Native PPU rendering is synchronized to one game update per display
+  // refresh, regardless of the desktop-oriented DisableFrameDelay setting.
+  sceDisplayWaitVblankStart();
   sceGuSwapBuffers();
 }
 
